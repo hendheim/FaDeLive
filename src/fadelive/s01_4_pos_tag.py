@@ -1,0 +1,145 @@
+#!/usr/bin/env python3
+"""
+POS-Tagging für ein JSON-Vokabular. Nutzbar als CLI, als Python-Modul
+oder als importierbare Pipeline-Funktion.
+
+JSON-Format:
+
+{
+  "variant": "stop",
+  "vocabulary_size": 170362,
+  "top_words": [
+    ["nicht", 45825],
+    ["deutsch", 13701],
+    ["ganz", 12999]
+  ]
+}
+
+Beispielaufruf: 
+
+    python src/fadelive/s01_4_pos_tag.py `
+        --input output/vocabular/vocab_full_stop.json `
+        --output output/vocabular/vocab_top5000_stop_pos.csv `
+        --model de_core_news_lg
+"""
+
+from __future__ import annotations
+import argparse
+import json
+from pathlib import Path
+from typing import List, Tuple, Dict, Any
+
+import pandas as pd
+import spacy
+from spacy.language import Language
+from spacy.tokens import Token
+
+
+# ---------------------------------------------------------
+# JSON LADEN
+# ---------------------------------------------------------
+def load_vocab(path, limit: int = 5000) -> List[Tuple[str, int]]:
+    """
+    Lädt ein JSON-Vokabular und gibt eine Liste mit den Top-5000-Ausdrücken aus (word, count) zurück.
+    Akzeptiert sowohl String- als auch Path-Argumente.
+    """
+    # 👉 NEU: immer in Path umwandeln, egal ob String oder Path übergeben wurde
+    path = Path(path)
+
+    if not path.is_file():
+        raise FileNotFoundError(f"JSON-Datei nicht gefunden: {path}")
+
+    with path.open("r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    if "top_words" not in data:
+        raise KeyError("Im JSON fehlt der Schlüssel 'top_words'.")
+
+    vocab_raw = data["top_words"]
+    vocab: List[Tuple[str, int]] = []
+
+    for entry in vocab_raw:
+        if isinstance(entry, list) and len(entry) == 2:
+            word, cnt = entry
+            if isinstance(word, str) and isinstance(cnt, int):
+                vocab.append((word, cnt))
+
+    if not vocab:
+        raise ValueError("Keine gültigen Wort-Zähler-Paare in 'top_words' gefunden.")
+
+    vocab_sorted = sorted(vocab, key=lambda x: x[1], reverse=True)
+    vocab_limited = vocab_sorted[:limit]
+
+    return vocab_limited
+
+
+# ---------------------------------------------------------
+# POS-TAGGING
+# ---------------------------------------------------------
+
+def get_pos(word: str, nlp: Language) -> str:
+    """Gibt das POS-Tag eines Wortes zurück."""
+    doc = nlp(word)
+    for token in doc:
+        if not token.is_space:
+            return token.pos_
+    return ""
+
+
+def pos_tag_vocab(vocab: List[Tuple[str, int]], nlp: Language) -> pd.DataFrame:
+    """Taggt alle Wörter und erstellt ein DataFrame."""
+    rows = []
+    for word, count in vocab:
+        rows.append(
+            {
+                "word": word,
+                "pos": get_pos(word, nlp),
+                "count": count
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+# ---------------------------------------------------------
+# PIPELINE-FUNKTION (für Python-Import)
+# ---------------------------------------------------------
+def run(
+    input_json,
+    output_csv="vocab_pos.csv",
+    model="de_core_news_lg",
+    limit=5000
+):
+    vocab = load_vocab(input_json, limit=limit)
+
+    # Hier direkt spaCy laden
+    nlp = spacy.load(model)
+
+    df = pos_tag_vocab(vocab, nlp)
+    df.to_csv(output_csv, index=False, encoding="utf-8")
+    return output_csv
+
+
+# ---------------------------------------------------------
+# CLI
+# ---------------------------------------------------------
+def parse_cli():
+    parser = argparse.ArgumentParser(description="POS-Tagging eines JSON-Vokabulars")
+    parser.add_argument("--input", required=True, help="Pfad zur JSON-Datei")
+    parser.add_argument("--output", default="vocab_stop_pos.csv", help="Ausgabe-CSV")
+    parser.add_argument("--model", default="de_core_news_lg", help="spaCy-Modellname")
+    return parser.parse_args()
+
+
+def main():
+    args = parse_cli()
+    print(f"📥 Lade JSON: {args.input}")
+    print(f"🧠 Lade Modell: {args.model}")
+
+    output = run(args.input, args.output, args.model)
+
+    print(f"💾 Fertig! Ergebnis gespeichert unter: {output}")
+
+
+# Modulstart
+if __name__ == "__main__":
+    main()

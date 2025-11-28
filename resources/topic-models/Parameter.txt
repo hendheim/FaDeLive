@@ -1,0 +1,5 @@
+chunks=0
+itteration=Default
+topics=30
+preprocessing=ht, stop
+

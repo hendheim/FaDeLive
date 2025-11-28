@@ -1,0 +1,61 @@
+[step1_s01_1_preprocessing]
+input_path       = "data/raw/korpus.csv"
+output_dir       = "output/processed_corpus"
+delimiter        = ";"
+replacements_path = "resources/replacements_v3.json"
+stopwords_path    = "resources/stopwords_v2.txt"
+salat_path        = "resources/ocr_post-correction_dictionary.txt"
+hanta_model       = "morphmodel_ger.pgz"
+
+[step2_s01_2_vocabular]
+input_dir  = "output/processed_corpus"
+output_dir = "output/vocabular"
+delimiter  = ";"
+
+[step3_s01_3_statistics]
+preprocessed_dir = "output/processed_corpus"
+output_dir       = "output/statistics"
+delimiter        = ";"
+
+[step4_s01_4_pos_tag]
+input_json = "output/vocabular/vocab_full_stop.json"
+output_csv = "output/vocabular/vocab_top5000_stop_pos.csv"
+model      = "de_core_news_lg"
+limit      = 5000
+
+[step5_s02_preprocessing_gensim]
+input_path       = "output/processed_corpus/korpus_min.csv"
+output_path      = "output/processed_corpus/korpus_gen.csv"
+delimiter        = ";"
+replacements_path = "resources/replacements_v3.json"
+stopwords_path    = "resources/stopwords_v2.txt"
+salat_path        = "resources/ocr_post-correction_dictionary.txt"
+hanta_model       = "morphmodel_ger.pgz"
+
+[step6_s03_dtm_tfidf]
+input_path = "output/processed_corpus/korpus_stop.csv"
+output_dir = "output/dtm_tfidf_stop"
+sep        = ";"
+
+[step7_s04_cosine]
+input_path  = "output/dtm_tfidf_stop/tfidf-2000.csv"
+output_path = "output/cosine/cosine_tfidf2000.csv"
+
+[step8_s05_dtm_tfidf_cos_intervals]
+input_path = "output/processed_corpus/korpus_stop.csv"
+dtm_output = "output/intervals/dtm_tfidf_stop"
+cos_output = "output/intervals/cosine_stop"
+sep        = ";"
+
+[step9_s06_tfidf_rank]
+input_dir  = "output"
+output_dir = "output/tfidf_rank"
+top_n      = 2000
+
+[step10_s07_word_vector_model]
+input_dir = "output/processed_corpus"
+output_dir = "output/word2vec_models"
+pattern   = "korpus_gen*.csv"
+
+[run]
+steps = ["1","2","3","4","5","6","7","8","9","10"]  # optional: welche Schritte laufen 
