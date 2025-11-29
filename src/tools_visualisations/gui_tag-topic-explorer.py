@@ -44,7 +44,7 @@ META_NAME_BLACKLIST = {
 }
 
 # -----------------------------
-# Matplotlib Style (kleiner, kompakt)
+# Matplotlib Style (kompakt)
 # -----------------------------
 plt.rcParams.update({
     "font.family": "sans-serif",
@@ -73,7 +73,7 @@ plt.rcParams.update({
 })
 
 def _apply_layout(fig: plt.Figure) -> None:
-    """Nutze constrained_layout wenn verfügbar, sonst tight_layout."""
+    """Verhindert abgeschnittene Labels."""
     try:
         if hasattr(fig, "set_constrained_layout"):
             fig.set_constrained_layout(True)
@@ -174,7 +174,6 @@ def install_safe_exit(root: tk.Tk) -> None:
     root.bind("<Escape>", lambda _e: safe_exit_tk(root), add="+")
 
 def bring_front(win: tk.Toplevel | tk.Tk) -> None:
-    # Kein always-on-top -> Alt+Tab funktioniert
     win.update_idletasks()
     try: win.attributes("-topmost", False)
     except Exception: pass
@@ -184,36 +183,18 @@ def bring_front(win: tk.Toplevel | tk.Tk) -> None:
     except Exception: pass
 
 def install_focus_minimize(root: tk.Tk, enable: bool = True) -> None:
-    """
-    Minimiere das Fenster nur dann, wenn der Fokusverlust durch einen
-    Maus-Klick außerhalb verursacht wurde. Reines Mouse-Leave oder Alt+Tab
-    sollen NICHT minimieren.
-
-    Umsetzung: Wir werten im FocusOut-Event das state-Bitfeld aus.
-    Wenn während des Fokusverlustes ein Mausbutton gedrückt war,
-    sind Button-Masks gesetzt (Button1..3). Zusätzlich stellen wir sicher,
-    dass der Fokus wirklich das gesamte Tk verlässt (focus_displayof() ist None).
-    """
     if not enable:
         return
-
-    # Bitmasken für Button1..3 in Tk (X11/Win): 0x100, 0x200, 0x400
     BUTTON_MASK = 0x100 | 0x200 | 0x400
-
     def _on_focus_out(event):
         try:
-            # Fokus liegt nicht mehr auf irgendeinem Tk-Widget → Verlassen der App
             focus_inside = (root.focus_displayof() is not None)
-            # War beim Fokusverlust eine Maustaste gedrückt?
             st = getattr(event, "state", 0)
             mouse_down = bool(st & BUTTON_MASK)
             if (not focus_inside) and mouse_down:
                 root.iconify()
         except Exception:
-            # Failsafe: niemals hart crashen
             pass
-
-    # Nur auf dem Root binden, nicht global, damit interne Widget-Wechsel nicht feuern
     root.bind("<FocusOut>", _on_focus_out, add="+")
 
 
@@ -234,7 +215,7 @@ def _shrink_axes(ax):
 # -----------------------------
 class DataManager:
     def __init__(self) -> None:
-        # Termset↔Topic-Abbildungen (Termset-Topic Visuals)
+        # Termset↔Topic-Abbildungen
         self.path_termset: Path = RESOURCES_DIR / "termsets" / "Termset_Begriffe_2.3.csv"
         self.path_topic_words: Path = RESOURCES_DIR / "topic-models" / "topics_v3" / "fadelive_mallet_stop_topic_words_100_words_tag.csv"
         self.path_tfidf: Path = OUTPUT_DIR / "dtm_tfidf_stop" / "tfidf-2000.csv"
@@ -243,7 +224,7 @@ class DataManager:
         self.path_counts_per_year: Path = OUTPUT_DIR / "processed_termset" / "Termset_Begriffe_2.3" / "Termset_Begriffe_2.3_dtti_topdocs_topic_counts_per_year.csv"
         self.path_top10_year_value: Path = OUTPUT_DIR / "processed_termset" / "Termset_Begriffe_2.3" / "Termset_Begriffe_2.3_dtti_topdocs_top10_year_value.csv"
         self.path_top10_value_per_text_topic: Path = OUTPUT_DIR / "processed_termset" / "Termset_Begriffe_2.3" / "Termset_Begriffe_2.3_dtti_topdocs_top10_value_per_text_topic.csv"
-        # Topic-only Visuals + Verläufe (Initial-Code)
+        # Topic-only Visuals + Verläufe
         self.path_tokens_year: Path = OUTPUT_DIR / "statistics" / "year_count_tokens.csv"
         self.path_global_topdocs_year: Path = OUTPUT_DIR / "processed_topics" / "document-topics-distribution_tag_topdocs_year_value.csv"
         self.path_topics: Path = RESOURCES_DIR / "topic-models" / "topics_v3" / "document-topics-distribution_tag.csv"
@@ -405,10 +386,10 @@ def topic_labels_ordered_from_rank(df_ranks: pd.DataFrame, topics: Iterable[str]
     return r["Topic"].astype(str).str.split("(", n=1).str[0].str.strip().tolist()
 
 # -----------------------------
-# Termset-Topic Visualisierungen (Tag-Topic-Exploration)
+# Tag-Topic-Exploration
 # -----------------------------
 def build_tab_bubbles_rank_topn(nb: ttk.Notebook, root: tk.Tk) -> None:
-    frame = ttk.Frame(nb); nb.add(frame, text="Bubbles (Top-N nach Rang)")
+    frame = ttk.Frame(nb); nb.add(frame, text="TT-Relevanz (Bubbles)")
     row = 0
     ttk.Label(frame, text="Top-N Topics (Rang):").grid(row=row, column=0, sticky="w", padx=6, pady=4)
     ent_topn = _mk_entry(frame, width=8); ent_topn.insert(0, "10"); ent_topn.grid(row=row, column=1, sticky="w", padx=6, pady=4)
@@ -474,107 +455,22 @@ def build_tab_bubbles_rank_topn(nb: ttk.Notebook, root: tk.Tk) -> None:
         ax.scatter(df_top["Topic_Label"], df_top["Tag"], s=sizes, color="sienna", alpha=0.6, edgecolors="black")
         ax.set_xlabel("Topic (TFIDF-Positions-Rang)")
         ax.set_ylabel("Tag")
-        ax.set_title(f"Top {len(ordered_labels)} Topics – TF-IDF-Summen (Termset-Overlap)")
+        ax.set_title(f"Top {len(ordered_labels)} Topics – TT-Relevanz (TF-IDF-Overlap)")
         _shrink_axes(ax); _apply_layout(fig); plt.show()
 
         out_df = df_top.rename(columns={"tfidf_sum": "value"})
-        ctx["v"] = f"bubbles_rank_top{len(ordered_labels)}"
-        btn_csv.configure(state="normal", command=lambda: ask_save_df(out_df, "Bubbles_rank_top", ctx["v"], root))
-        btn_png.configure(state="normal", command=lambda: ask_save_current_figure("Bubbles_rank_top", ctx["v"], root, fig=fig))
-
-    ttk.Button(frame, text="Berechnen", command=run).grid(row=row, column=0, sticky="w", padx=6, pady=6)
-
-
-def build_tab_bubbles_ranked_score(nb: ttk.Notebook, root: tk.Tk) -> None:
-    frame = ttk.Frame(nb); nb.add(frame, text="Bubbles (Score nach Rang)")
-    row = 0
-    ttk.Label(frame, text="N Topics (Rang):").grid(row=row, column=0, sticky="w", padx=6, pady=4)
-    ent_topn = _mk_entry(frame, width=8); ent_topn.insert(0, "30"); ent_topn.grid(row=row, column=1, sticky="w", padx=6, pady=4)
-    ttk.Label(frame, text="Bubble-Skalierung:").grid(row=row, column=2, sticky="w", padx=6, pady=4)
-    ent_scale = _mk_entry(frame, width=8); ent_scale.insert(0, "4"); ent_scale.grid(row=row, column=3, sticky="w", padx=6, pady=4)
-
-    row += 1
-    btn_csv = ttk.Button(frame, text="CSV speichern", state="disabled")
-    btn_png = ttk.Button(frame, text="PNG speichern", state="disabled")
-    btn_csv.grid(row=row, column=2, sticky="e", padx=6, pady=6)
-    btn_png.grid(row=row, column=3, sticky="e", padx=6, pady=6)
-
-    out_df: Optional[pd.DataFrame] = None
-    ctx = {"v": ""}
-
-    def run():
-        nonlocal out_df
-        try:
-            df_tags = DATA.load_termset()
-            df_topics = DATA.load_topic_words()
-            df_ranks = DATA.load_ranks()
-        except Exception as e:
-            messagebox.showerror("Fehler", str(e), parent=root); return
-
-        r = (df_ranks.assign(Topic=df_ranks["Topic"].astype(str),
-                             rank=pd.to_numeric(df_ranks["TFIDF-Positions-Rang"], errors="coerce"))
-                      .dropna(subset=["rank"]).sort_values("rank"))
-
-        try:
-            n = max(1, int((ent_topn.get() or "30").strip()))
-            scale = float((ent_scale.get() or "4").strip())
-        except Exception:
-            messagebox.showerror("Fehler", "Ungültige Parameter (N / Skalierung).", parent=root); return
-
-        topics_available = set(df_topics.index.astype(str))
-        top_topics_ordered = [t for t in r["Topic"].tolist() if t in topics_available][:n]
-        if not top_topics_ordered:
-            messagebox.showerror("Fehler", "Keine passenden Topics aus der Rangliste gefunden.", parent=root); return
-
-        tag_dict = tag_dict_from_df(df_tags)
-        topic_map = topic_word_map_from_df(df_topics)
-        tfidf_dict = tfidf_series_sum(DATA).to_dict()
-        tfidf_index = set(tfidf_dict.keys())
-
-        rows = []
-        for topic in top_topics_ordered:
-            twords = topic_map[topic]
-            tset = set(twords)
-            pos = {w: i for i, w in enumerate(twords, start=1)}  # 1-basiert
-            for tag, expr in tag_dict.items():
-                common = (tset & set(expr)) & tfidf_index
-                score = 0.0
-                for w in common:
-                    tv = tfidf_dict.get(w, 0.0)
-                    p = pos.get(w, 0)
-                    if tv > 0 and p > 0:
-                        score += tv / math.log(p + 1)
-                rows.append({"Topic": topic, "Tag": tag, "tag_topic_score": score})
-
-        df_top = pd.DataFrame(rows)
-        df_top["Topic_Label"] = df_top["Topic"].astype(str).str.split("(", n=1).str[0].str.strip()
-        df_top["rank"] = df_top["Topic"].map(dict(zip(r["Topic"], r["rank"])))
-        df_top = df_top.sort_values(["rank","Tag"])
-        ordered_labels = topic_labels_ordered_from_rank(r, top_topics_ordered)
-        df_top["Topic_Label"] = pd.Categorical(df_top["Topic_Label"], categories=ordered_labels, ordered=True)
-
-        fig, ax = plt.subplots(figsize=(12, 6))
-        base = df_top["tag_topic_score"].clip(lower=0).to_numpy()
-        sizes = (base * scale) + 10.0
-        ax.scatter(df_top["Topic_Label"], df_top["Tag"], s=sizes, color="sienna", alpha=0.6, edgecolors="black")
-        ax.set_xlabel("Topic (TFIDF-Positions-Rang)")
-        ax.set_ylabel("Tag")
-        ax.set_title(f"Top {len(ordered_labels)} Topics – Bubblegröße = Tag-Topic-Score")
-        _shrink_axes(ax); _apply_layout(fig); plt.show()
-
-        out_df = df_top.rename(columns={"tag_topic_score": "value"})
-        ctx["v"] = f"bubbles_ranked_score_top{len(ordered_labels)}"
-        btn_csv.configure(state="normal", command=lambda: ask_save_df(out_df, "Bubbles_ranked_score", ctx["v"], root))
-        btn_png.configure(state="normal", command=lambda: ask_save_current_figure("Bubbles_ranked_score", ctx["v"], root, fig=fig))
+        ctx["v"] = f"tt_relevanz_bubbles_top{len(ordered_labels)}"
+        btn_csv.configure(state="normal", command=lambda: ask_save_df(out_df, "TT_Relevanz_Bubbles", ctx["v"], root))
+        btn_png.configure(state="normal", command=lambda: ask_save_current_figure("TT_Relevanz_Bubbles", ctx["v"], root, fig=fig))
 
     ttk.Button(frame, text="Berechnen", command=run).grid(row=row, column=0, sticky="w", padx=6, pady=6)
 
 
 def build_tab_tag_relevance(nb: ttk.Notebook, root: tk.Tk) -> None:
-    frame = ttk.Frame(nb); nb.add(frame, text="Tag-Relevanz")
+    frame = ttk.Frame(nb); nb.add(frame, text="Tag-Topic-Relevancescore")
     row = 0
     btn_png = ttk.Button(frame, text="PNG speichern", state="disabled"); btn_png.grid(row=row, column=3, sticky="e", padx=6, pady=6)
-    ctx = {"v": "tag_relevance"}
+    ctx = {"v": "tag_topic_relevancescore"}
 
     def run():
         try:
@@ -596,16 +492,24 @@ def build_tab_tag_relevance(nb: ttk.Notebook, root: tk.Tk) -> None:
         ax2.plot(range(len(d)), d["Relevanzscore_Tag_TFIDF"], color="black", marker="o", markersize=3, linewidth=1)
         ax2.set_ylabel("Relevanzscore_Tag_TFIDF")
         ax2.tick_params(axis='y', labelsize=8)
-        plt.title("Tag-Topic-Verhältnisse vs. TF-IDF-Summen", fontsize=12)
+        plt.title("Tag-Topic-Relevancescore vs. TF-IDF-Sum", fontsize=12)
         _apply_layout(fig); plt.show()
 
-        btn_png.configure(state="normal", command=lambda: ask_save_current_figure("Tag_Relevanz", ctx["v"], root, fig=fig))
+        btn_png.configure(state="normal", command=lambda: ask_save_current_figure("Tag_Topic_Relevancescore", ctx["v"], root, fig=fig))
 
     ttk.Button(frame, text="Plotten", command=run).grid(row=row, column=0, sticky="w", padx=6, pady=6)
 
 
+def _ranked_topics_by_r(df_counts: pd.DataFrame, df_ranks: pd.DataFrame, topn: int) -> List[str]:
+    topics_in_df = df_counts.columns.astype(str)
+    r = (df_ranks.assign(Topic=df_ranks["Topic"].astype(str),
+                         rank=pd.to_numeric(df_ranks["TFIDF-Positions-Rang"], errors="coerce"))
+                  .dropna(subset=["rank"]).sort_values("rank"))
+    ranked = [t for t in r["Topic"].tolist() if t in topics_in_df][:topn]
+    return ranked
+
 def build_tab_topics_year_stacked(nb: ttk.Notebook, root: tk.Tk) -> None:
-    frame = ttk.Frame(nb); nb.add(frame, text="Topics/Jahr (Stacked)")
+    frame = ttk.Frame(nb); nb.add(frame, text="TT-Texts/Jahr (Stacked)")
     row=0
     ttk.Label(frame, text="Jahr von–bis:").grid(row=row, column=0, sticky="w", padx=6, pady=4)
     ent_years = _mk_entry(frame, width=12); ent_years.insert(0,"1780-1900"); ent_years.grid(row=row, column=1, sticky="w", padx=6, pady=4)
@@ -630,16 +534,12 @@ def build_tab_topics_year_stacked(nb: ttk.Notebook, root: tk.Tk) -> None:
         rng = pd.Index(range(ymin, ymax+1), name="Jahr")
         df = df.reindex(rng, fill_value=0)
 
-        topics_in_df = df.columns.astype(str)
-        r = (df_ranks.assign(Topic=df_ranks["Topic"].astype(str),
-                             rank=pd.to_numeric(df_ranks["TFIDF-Positions-Rang"], errors="coerce"))
-                      .dropna(subset=["rank"]).sort_values("rank"))
         try:
             topn = max(1, int((ent_topn.get() or "10").strip()))
         except Exception:
             topn = 10
 
-        ranked_topics = [t for t in r["Topic"].tolist() if t in topics_in_df][:topn]
+        ranked_topics = _ranked_topics_by_r(df, df_ranks, topn)
         if not ranked_topics:
             messagebox.showerror("Fehler", "Keine Topics aus Rangdatei in den Counts gefunden.", parent=root); return
 
@@ -653,20 +553,22 @@ def build_tab_topics_year_stacked(nb: ttk.Notebook, root: tk.Tk) -> None:
         ticks = [i for i, y in enumerate(dfp.index) if int(y) % 10 == 0]
         ax.set_xticks(ticks); ax.set_xticklabels([dfp.index[i] for i in ticks], rotation=45, ha='right', fontsize=8)
         ax.tick_params(axis='y', labelsize=8)
-        ax.set_xlabel("Jahr"); ax.set_ylabel("Anzahl der Top-50-Texte pro Topic")
-        ax.set_title("Anzahl der Top-50-Texte pro Topic pro Jahr (Stacked; Top-N nach Rang)", fontsize=12)
+        ax.set_xlabel("Jahr"); ax.set_ylabel("Anzahl TT-Texts (Top-50) pro Topic")
+        ax.set_title("TT-Texts/Jahr (Stacked) – Top-N Topics nach TFIDF-Positions-Rang", fontsize=12)
+
+        # Legende in Rangreihenfolge
         handles, labels = ax.get_legend_handles_labels()
-        labels = [lab.replace("(", "\n(") for lab in labels]
-        ax.legend(handles=handles, labels=labels, bbox_to_anchor=(1.02, 0.5), loc="center left", title="Topics", fontsize=8)
+        ax.legend(handles=handles, labels=[lab.replace("(", "\n(") for lab in labels],
+                  bbox_to_anchor=(1.02, 0.5), loc="center left", title="Topics", fontsize=8)
         _apply_layout(fig); plt.show()
 
-        ctx["v"] = f"topics_year_stacked_{ymin}_{ymax}_top{topn}"
-        btn_png.configure(state="normal", command=lambda: ask_save_current_figure("Topics_Year_Stacked", ctx["v"], root, fig=fig))
+        ctx["v"] = f"tt_texts_year_stacked_{ymin}_{ymax}_top{topn}"
+        btn_png.configure(state="normal", command=lambda: ask_save_current_figure("TT_Texts_Year_Stacked", ctx["v"], root, fig=fig))
 
     ttk.Button(frame, text="Plotten", command=run).grid(row=row, column=0, sticky="w", padx=6, pady=6)
     
 def build_tab_topics_year_poly(nb: ttk.Notebook, root: tk.Tk) -> None:
-    frame = ttk.Frame(nb); nb.add(frame, text="Topics/Jahr (Poly)")
+    frame = ttk.Frame(nb); nb.add(frame, text="TT-Texts/Jahr (Poly)")
     row=0
     ttk.Label(frame, text="Polynom-Grad:").grid(row=row, column=0, sticky="w", padx=6, pady=4)
     ent_deg = _mk_entry(frame, width=8); ent_deg.insert(0,"6"); ent_deg.grid(row=row, column=1, sticky="w", padx=6, pady=4)
@@ -688,16 +590,12 @@ def build_tab_topics_year_poly(nb: ttk.Notebook, root: tk.Tk) -> None:
         df.index = df.index.astype(int)
         df = df.reindex(range(df.index.min(), df.index.max()+1), fill_value=0)
 
-        topics_in_df = df.columns.astype(str)
-        r = df_ranks.assign(
-            Topic=df_ranks["Topic"].astype(str),
-            rank=pd.to_numeric(df_ranks["TFIDF-Positions-Rang"], errors="coerce")
-        ).dropna(subset=["rank"]).sort_values("rank")
         try:
             n = max(1, int((ent_topn.get() or "10").strip()))
         except Exception:
             n = 10
-        ranked_topics = [t for t in r["Topic"].tolist() if t in topics_in_df][:n]
+
+        ranked_topics = _ranked_topics_by_r(df, df_ranks, n)
         if not ranked_topics:
             messagebox.showerror("Fehler", "Keine Topics aus Rangdatei in den Counts gefunden.", parent=root); return
 
@@ -718,21 +616,21 @@ def build_tab_topics_year_poly(nb: ttk.Notebook, root: tk.Tk) -> None:
             y_poly = np.polyval(coeffs, x)
             ax.plot(x, y_poly, label=topic.replace("(", "\n("), color=colors[i], linestyle="-", linewidth=1)
 
-        ax.set_xticks([jahr for jahr in x.astype(int) if jahr % 10 == 0])
-        ax.set_xlabel("Jahr"); ax.set_ylabel("Anzahl der Top-50-Texte pro Topic")
-        ax.set_title(f"Pro Jahr (Polynom Grad {deg}) – Top-N nach TFIDF-Positions-Rang", fontsize=12)
+        ax.set_xticks([int(j) for j in x.astype(int) if int(j) % 10 == 0])
+        ax.set_xlabel("Jahr"); ax.set_ylabel("Anzahl TT-Texts (Top-50) pro Topic")
+        ax.set_title(f"TT-Texts/Jahr (Poly, Grad {deg}) – Top-N nach TFIDF-Positions-Rang", fontsize=12)
         ax.legend(bbox_to_anchor=(1.02, 0.5), loc="center left", title="Topics", fontsize=8)
         ax.tick_params(axis='x', labelrotation=45, labelsize=8)
         ax.tick_params(axis='y', labelsize=8)
         _apply_layout(fig); plt.show()
 
-        ctx["v"] = f"topics_year_poly_deg{deg}_top{n}"
-        btn_png.configure(state="normal", command=lambda: ask_save_current_figure("Topics_Year_Poly", ctx["v"], root, fig=fig))
+        ctx["v"] = f"tt_texts_year_poly_deg{deg}_top{n}"
+        btn_png.configure(state="normal", command=lambda: ask_save_current_figure("TT_Texts_Year_Poly", ctx["v"], root, fig=fig))
 
     ttk.Button(frame, text="Plotten", command=run).grid(row=row, column=0, sticky="w", padx=6, pady=6)
 
 def build_tab_series_top10(nb: ttk.Notebook, root: tk.Tk) -> None:
-    frame = ttk.Frame(nb); nb.add(frame, text="Top10 Zeitreihe")
+    frame = ttk.Frame(nb); nb.add(frame, text="T-Top10-T-Texts/Jahr (Global)")
     row=0
     ttk.Label(frame, text="Jahr von–bis:").grid(row=row, column=0, sticky="w", padx=6, pady=4)
     ent_years = _mk_entry(frame, width=12); ent_years.insert(0,"1780-1900"); ent_years.grid(row=row, column=1, sticky="w", padx=6, pady=4)
@@ -754,7 +652,7 @@ def build_tab_series_top10(nb: ttk.Notebook, root: tk.Tk) -> None:
 
         y = ensure_numeric(df["Wert"])
         if y.notna().sum() == 0:
-            messagebox.showinfo("Info", "Keine numerischen Werte für Top10-Zeitreihe.", parent=root); return
+            messagebox.showinfo("Info", "Keine numerischen Werte.", parent=root); return
         y = y.fillna(0.0)
         y_norm = (y - y.min()) / (y.max() - y.min()) if (y.max() > y.min()) else y * 0
         df = df.assign(Wert=y_norm)
@@ -772,20 +670,20 @@ def build_tab_series_top10(nb: ttk.Notebook, root: tk.Tk) -> None:
         ax.plot(df["Jahr"], df["Wert"], label="Rohfrequenz (norm.)", linestyle='-', marker='o', markersize=3, alpha=0.6)
         ax.plot(df["Jahr"], df["Gleitmittel"], label="Gleitender Mittelwert (5J)", linewidth=1.8)
         ax.plot(df["Jahr"], df["Polynom"], label=f"Polynom (Grad {deg})", linewidth=1.5, linestyle='--')
-        ax.set_title("Top-10-Text-Werte pro Jahr", fontsize=12)
+        ax.set_title("T-Top10-T-Texts/Jahr (Global, normiert)", fontsize=12)
         ax.set_xlabel("Jahr"); ax.set_ylabel("Normalisierter Wert")
         ax.set_xticks(np.arange(ymin, ymax+1, 10))
         ax.tick_params(axis='x', labelrotation=45, labelsize=8); ax.tick_params(axis='y', labelsize=8)
         ax.legend(fontsize=8)
         _apply_layout(fig); plt.show()
 
-        ctx["v"] = f"top10_series_{ymin}_{ymax}_deg{deg}"
-        btn_png.configure(state="normal", command=lambda: ask_save_current_figure("Top10_Series", ctx["v"], root, fig=fig))
+        ctx["v"] = f"t_top10_t_texts_year_{ymin}_{ymax}_deg{deg}"
+        btn_png.configure(state="normal", command=lambda: ask_save_current_figure("T_Top10_T_Texts_Year", ctx["v"], root, fig=fig))
 
     ttk.Button(frame, text="Plotten", command=run).grid(row=row, column=0, sticky="w", padx=6, pady=6)
 
 def build_tab_compare_tokens_topics(nb: ttk.Notebook, root: tk.Tk) -> None:
-    frame = ttk.Frame(nb); nb.add(frame, text="Vergleich (Tokens/Topics)")
+    frame = ttk.Frame(nb); nb.add(frame, text="Global: Tokens, Topics, TT-Texts")
     row=0
     ttk.Label(frame, text="Jahr von–bis:").grid(row=row, column=0, sticky="w", padx=6, pady=4)
     ent_years = _mk_entry(frame, width=12); ent_years.insert(0,"1780-1900"); ent_years.grid(row=row, column=1, sticky="w", padx=6, pady=4)
@@ -813,7 +711,7 @@ def build_tab_compare_tokens_topics(nb: ttk.Notebook, root: tk.Tk) -> None:
                 if c in tokens_df.columns:
                     tokens_df = tokens_df.rename(columns={c:"anzahl_tokens"}); break
         if "Wert" not in global_df.columns or "Wert" not in begriffe_df.columns:
-            messagebox.showerror("Fehler", "Spalte 'Wert' in den *_year_value-Dateien nicht gefunden.", parent=root); return
+            messagebox.showerror("Fehler", "Spalte 'Wert' fehlt.", parent=root); return
 
         tokens_df = tokens_df.sort_values("year")
         global_df = global_df.sort_values("Jahr")
@@ -832,24 +730,24 @@ def build_tab_compare_tokens_topics(nb: ttk.Notebook, root: tk.Tk) -> None:
         ymin, ymax = parse_year_range(ymin, ymax, ent_years.get())
 
         fig, ax = plt.subplots(figsize=(12, 5.2))
-        ax.plot(begriffe_df["Jahr"], begriffe_df["norm"], label="Top-50-Topic-Texte Termset (norm.)", linestyle="-", linewidth=1.5)
-        ax.plot(tokens_df["year"], tokens_df["norm"], label="Token-Anzahl (norm.)", linestyle="--", linewidth=1.2)
-        ax.plot(global_df["Jahr"], global_df["norm"], label="Top-50-Topic-Texte global (norm.)", linestyle="--", linewidth=1.2)
-        ax.set_title("Gleitende Mittelwerte: Tokens vs. Top-50-Topic-Texte (global/Termset)", fontsize=12)
+        ax.plot(begriffe_df["Jahr"], begriffe_df["norm"], label="TT-Texts (Termset, norm.)", linestyle="-", linewidth=1.5)
+        ax.plot(tokens_df["year"], tokens_df["norm"], label="Tokens (norm.)", linestyle="--", linewidth=1.2)
+        ax.plot(global_df["Jahr"], global_df["norm"], label="TopDocs-Distribution (global, norm.)", linestyle="--", linewidth=1.2)
+        ax.set_title("TopDocs-Distribution vs. Tokens vs. TT-Texts (normiert)", fontsize=12)
         ax.set_xlabel("Jahr"); ax.set_ylabel("Normalisierter Wert (0–1)")
         ax.set_xticks(np.arange(ymin, ymax+1, 10))
         ax.tick_params(axis='x', labelrotation=45, labelsize=8); ax.tick_params(axis='y', labelsize=8)
         ax.legend(fontsize=8)
         _apply_layout(fig); plt.show()
 
-        ctx["v"] = f"compare_tokens_topics_{ymin}_{ymax}"
-        btn_png.configure(state="normal", command=lambda: ask_save_current_figure("Compare_Tokens_Topics", ctx["v"], root, fig=fig))
+        ctx["v"] = f"global_tokens_topics_tttexts_{ymin}_{ymax}"
+        btn_png.configure(state="normal", command=lambda: ask_save_current_figure("Global_Tokens_Topics_TTTexts", ctx["v"], root, fig=fig))
 
     ttk.Button(frame, text="Plotten", command=run).grid(row=row, column=0, sticky="w", padx=6, pady=6)
 
 def build_tab_top10_value_per_text_topic(nb: ttk.Notebook, root: tk.Tk) -> None:
-    """NEU: Anzeige der Datei dtti_topdocs_top10_value_per_text_topic.csv als (text, rank)."""
-    frame = ttk.Frame(nb); nb.add(frame, text="Top10 Value pro Text/Topic")
+    """Anzeige und Rang von TT-Texts; erzwungen: Top30 Texte pro Topic wenn möglich."""
+    frame = ttk.Frame(nb); nb.add(frame, text="TT-Texts-Rang")
     row = 0
 
     cols = ("text", "rank")
@@ -877,28 +775,46 @@ def build_tab_top10_value_per_text_topic(nb: ttk.Notebook, root: tk.Tk) -> None:
         if df.shape[1] < 2:
             messagebox.showerror("Fehler", "Datei benötigt mind. zwei Spalten (Text-ID/Name, Wert).", parent=root); return
 
-        df2 = df.copy()
-        text_col = df2.columns[0]
-        value_col = df2.columns[1]
-        vals = ensure_numeric(df2[value_col]).fillna(0.0)
-        # Rang 1 = höchster Wert
-        df2["rank"] = (-vals).rank(method="min").astype(int)
-        df2 = df2.rename(columns={text_col: "text"})[["text", "rank"]].sort_values("rank", ascending=True)
+        # Spalten identifizieren
+        text_col = df.columns[0]
+        value_col = df.columns[1]
+        topic_col = None
+        for cand in ["Topic","topic","topic_label"]:
+            if cand in df.columns: topic_col = cand; break
+
+        work = df.copy()
+        work[value_col] = ensure_numeric(work[value_col]).fillna(0.0)
+
+        # Erzwinge Top30 pro Topic, wenn Topic-Spalte vorhanden; sonst global Top30
+        if topic_col:
+            work = (work.sort_values([topic_col, value_col], ascending=[True, False])
+                        .groupby(topic_col, group_keys=False)
+                        .head(30))
+        else:
+            work = work.sort_values(value_col, ascending=False).head(30)
+
+        # Rang 1 = höchster Wert (innerhalb Topic, falls vorhanden; sonst global)
+        if topic_col:
+            work["rank"] = work.groupby(topic_col)[value_col].rank(method="min", ascending=False).astype(int)
+        else:
+            work["rank"] = work[value_col].rank(method="min", ascending=False).astype(int)
+
+        df2 = work.rename(columns={text_col: "text"})[["text","rank"]].sort_values(["rank","text"], ascending=[True, True])
 
         tree.delete(*tree.get_children())
         for _, r in df2.iterrows():
             tree.insert("", "end", values=(str(r["text"]), int(r["rank"])))
 
         out_df = df2
-        btn_csv.configure(state="normal", command=lambda: ask_save_df(out_df, "Top10_Value_per_Text_Topic", "text_rank", root))
+        btn_csv.configure(state="normal", command=lambda: ask_save_df(out_df, "TT_Texts_Rang", "text_rank_top30", root))
 
     ttk.Button(frame, text="Laden/anzeigen", command=run).grid(row=row, column=0, sticky="w", padx=6, pady=6)
 
 # -----------------------------
-# Topic-Visualisierungen (Topic-Exploration) – inkl. Initial-Verläufe
+# Topic-Exploration (global)
 # -----------------------------
 def build_tab_global_series(nb: ttk.Notebook, root: tk.Tk) -> None:
-    frame = ttk.Frame(nb); nb.add(frame, text="Global: Topdocs/Jahr (Serie)")
+    frame = ttk.Frame(nb); nb.add(frame, text="TopDocs-Distributions/Year")
     row=0
     ttk.Label(frame, text="Jahr von–bis:").grid(row=row, column=0, sticky="w", padx=6, pady=4)
     ent_years = _mk_entry(frame, width=12); ent_years.insert(0,"1780-1900"); ent_years.grid(row=row, column=1, sticky="w", padx=6, pady=4)
@@ -936,20 +852,20 @@ def build_tab_global_series(nb: ttk.Notebook, root: tk.Tk) -> None:
         ax.plot(df["Jahr"], df["Wert"], label="Rohfrequenz (norm.)", linestyle='-', marker='o', markersize=3, alpha=0.6)
         ax.plot(df["Jahr"], df["Gleitmittel"], label="Gleitender Mittelwert (5J)", linewidth=1.8)
         ax.plot(df["Jahr"], df["Polynom"], label=f"Polynom (Grad {deg})", linewidth=1.5, linestyle='--')
-        ax.set_title("Global: Top-50-Topic-Texte pro Jahr", fontsize=12)
+        ax.set_title("TopDocs-Distributions/Year (normiert)", fontsize=12)
         ax.set_xlabel("Jahr"); ax.set_ylabel("Normalisierter Wert")
         ax.set_xticks(np.arange(ymin, ymax+1, 10))
         ax.tick_params(axis='x', labelrotation=45, labelsize=8); ax.tick_params(axis='y', labelsize=8)
         ax.legend(fontsize=8)
         _apply_layout(fig); plt.show()
 
-        ctx["v"] = f"global_series_{ymin}_{ymax}_deg{deg}"
-        btn_png.configure(state="normal", command=lambda: ask_save_current_figure("Global_Series", ctx["v"], root, fig=fig))
+        ctx["v"] = f"topdocs_distributions_year_{ymin}_{ymax}_deg{deg}"
+        btn_png.configure(state="normal", command=lambda: ask_save_current_figure("TopDocs_Distributions_Year", ctx["v"], root, fig=fig))
 
     ttk.Button(frame, text="Plotten", command=run).grid(row=row, column=0, sticky="w", padx=6, pady=6)
 
 def build_tab_global_compare_tokens(nb: ttk.Notebook, root: tk.Tk) -> None:
-    frame = ttk.Frame(nb); nb.add(frame, text="Global: Tokens vs. Topdocs")
+    frame = ttk.Frame(nb); nb.add(frame, text="TopDocs-Distribution vs. Tokens")
     row=0
     ttk.Label(frame, text="Jahr von–bis:").grid(row=row, column=0, sticky="w", padx=6, pady=4)
     ent_years = _mk_entry(frame, width=12); ent_years.insert(0,"1780-1900"); ent_years.grid(row=row, column=1, sticky="w", padx=6, pady=4)
@@ -990,22 +906,22 @@ def build_tab_global_compare_tokens(nb: ttk.Notebook, root: tk.Tk) -> None:
         ymin, ymax = parse_year_range(ymin, ymax, ent_years.get())
 
         fig, ax = plt.subplots(figsize=(12, 5.2))
-        ax.plot(tokens_df["year"], tokens_df["norm"], label="Token-Anzahl (norm.)", linestyle="--", linewidth=1.2)
-        ax.plot(global_df["Jahr"], global_df["norm"], label="Top-50-Topic-Texte global (norm.)", linestyle="-", linewidth=1.5)
-        ax.set_title("Tokens vs. Global Topdocs (normiert)", fontsize=12)
+        ax.plot(tokens_df["year"], tokens_df["norm"], label="Tokens (norm.)", linestyle="--", linewidth=1.2)
+        ax.plot(global_df["Jahr"], global_df["norm"], label="TopDocs-Distribution (norm.)", linestyle="-", linewidth=1.5)
+        ax.set_title("TopDocs-Distribution vs. Tokens (normiert)", fontsize=12)
         ax.set_xlabel("Jahr"); ax.set_ylabel("Normalisierter Wert (0–1)")
         ax.set_xticks(np.arange(ymin, ymax+1, 10))
         ax.tick_params(axis='x', labelrotation=45, labelsize=8); ax.tick_params(axis='y', labelsize=8)
         ax.legend(fontsize=8)
         _apply_layout(fig); plt.show()
 
-        ctx["v"] = f"global_compare_tokens_{ymin}_{ymax}"
-        btn_png.configure(state="normal", command=lambda: ask_save_current_figure("Global_Compare_Tokens", ctx["v"], root, fig=fig))
+        ctx["v"] = f"topdocs_distribution_vs_tokens_{ymin}_{ymax}"
+        btn_png.configure(state="normal", command=lambda: ask_save_current_figure("TopDocs_Distribution_vs_Tokens", ctx["v"], root, fig=fig))
 
     ttk.Button(frame, text="Plotten", command=run).grid(row=row, column=0, sticky="w", padx=6, pady=6)
 
 def build_tab_topic_trends_from_distribution(nb: ttk.Notebook, root: tk.Tk) -> None:
-    """Integriert die Verlaufsfunktion aus deinem Initial-Script (Topics+Metadata)."""
+    """Integriert die Verlaufsfunktion (Topics+Metadata)."""
     frame=ttk.Frame(nb); nb.add(frame, text="Topic-Verläufe (Cosinus/Schwelle)")
     row=0
     ttk.Label(frame, text="Schwelle (Cosinus):").grid(row=row, column=0, sticky="w", padx=6, pady=4)
@@ -1146,17 +1062,17 @@ def build_tab_data(root_nb: ttk.Notebook, root: tk.Tk) -> None:
 
     # Termset-Topic
     row_pick("Termset (Tags):", lambda: DATA.path_termset, DATA.set_termset)
-    row_pick("Topic-Wörter:",   lambda: DATA.path_topic_words, DATA.set_topic_words)
+    row_pick("Top-100-Topics-Words:",   lambda: DATA.path_topic_words, DATA.set_topic_words)
     row_pick("TF-IDF:",         lambda: DATA.path_tfidf, DATA.set_tfidf)
-    row_pick("Ranking:",        lambda: DATA.path_ranks, DATA.set_ranks)
-    row_pick("Relevanz:",       lambda: DATA.path_relevance, DATA.set_relevance)
-    row_pick("Counts/Jahr:",    lambda: DATA.path_counts_per_year, DATA.set_counts_per_year)
-    row_pick("Top10 Year Values:", lambda: DATA.path_top10_year_value, DATA.set_top10_year_value)
-    row_pick("Top10 Value per Text/Topic:", lambda: DATA.path_top10_value_per_text_topic, DATA.set_top10_value_per_text_topic)
+    row_pick("Tag-Topic-Ranking:",        lambda: DATA.path_ranks, DATA.set_ranks)
+    row_pick("Tag-Topic-Relevancescore:", lambda: DATA.path_relevance, DATA.set_relevance)
+    row_pick("Tag-Topic-Counts/Year:",    lambda: DATA.path_counts_per_year, DATA.set_counts_per_year)
+    row_pick("Tag-Topic-Value/Year:",     lambda: DATA.path_top10_year_value, DATA.set_top10_year_value)
+    row_pick("Tag-Topic-Value/Texts:",    lambda: DATA.path_top10_value_per_text_topic, DATA.set_top10_value_per_text_topic)
     # Topic-only
-    row_pick("Tokens/Jahr:",    lambda: DATA.path_tokens_year, DATA.set_tokens_year)
-    row_pick("Topdocs/Jahr (global):", lambda: DATA.path_global_topdocs_year, DATA.set_global_topdocs_year)
-    row_pick("Topics-Distribution:", lambda: DATA.path_topics, DATA.set_topics)
+    row_pick("Tokens/Year:",    lambda: DATA.path_tokens_year, DATA.set_tokens_year)
+    row_pick("Topic-Value/Year:", lambda: DATA.path_global_topdocs_year, DATA.set_global_topdocs_year)
+    row_pick("Document-Topics-Distribution:", lambda: DATA.path_topics, DATA.set_topics)
     row_pick("Metadata:", lambda: DATA.path_metadata, DATA.set_metadata)
 
     row += 1
@@ -1172,17 +1088,17 @@ def build_tab_data(root_nb: ttk.Notebook, root: tk.Tk) -> None:
     def load_check():
         info.delete(1.0, tk.END)
         msgs = [
-            _ok("Termset", DATA.load_termset),
-            _ok("Topic-Wörter", DATA.load_topic_words),
+            _ok("Termset (Tags)", DATA.load_termset),
+            _ok("Top-100-Topics-Words", DATA.load_topic_words),
             _ok("TF-IDF", DATA.load_tfidf),
-            _ok("Ranking", DATA.load_ranks),
-            _ok("Relevanz", DATA.load_relevance),
-            _ok("Counts per Year", DATA.load_counts_per_year),
-            _ok("Top10 Year Values", DATA.load_top10_year_value),
-            _ok("Top10 Value per Text/Topic", DATA.load_top10_value_per_text_topic),
-            _ok("Tokens/Jahr", DATA.load_tokens_year),
-            _ok("Topdocs/Jahr (global)", DATA.load_global_topdocs_year),
-            _ok("Topics-Distribution", DATA.load_topics_dist),
+            _ok("Tag-Topic-Ranking", DATA.load_ranks),
+            _ok("Tag-Topic-Relevancescore", DATA.load_relevance),
+            _ok("Tag-Topic-Counts/Year", DATA.load_counts_per_year),
+            _ok("Tag-Topic-Value/Year", DATA.load_top10_year_value),
+            _ok("Tag-Topic-Value/Texts", DATA.load_top10_value_per_text_topic),
+            _ok("Tokens/Year", DATA.load_tokens_year),
+            _ok("Topic-Value/Year", DATA.load_global_topdocs_year),
+            _ok("Document-Topics-Distribution", DATA.load_topics_dist),
             _ok("Metadata", DATA.load_metadata),
         ]
         info.insert(tk.END, "\n".join(msgs))
@@ -1194,10 +1110,10 @@ def build_tab_data(root_nb: ttk.Notebook, root: tk.Tk) -> None:
 # -----------------------------
 def main() -> None:
     root = tk.Tk()
-    root.title("Topic & Termset–Topic Visualisierungssuite")
+    root.title("Tag-Topic-Explorer")  # Fenstername angepasst
     install_safe_exit(root)
     bring_front(root)
-    install_focus_minimize(root, enable=True)  # bei Bedarf auf False setzen
+    install_focus_minimize(root, enable=True)
 
     nb_root = ttk.Notebook(root)
     nb_root.pack(fill="both", expand=True)
@@ -1205,22 +1121,22 @@ def main() -> None:
     # Daten
     build_tab_data(nb_root, root)
 
-    # Hauptreiter 1: Topic-Exploration (nur Topic-/Global-/Tokens-Dateien)
+    # Reiter 1: Topic-Exploration (global)
     nb_topics = ttk.Notebook(nb_root); nb_root.add(nb_topics, text="Topic-Exploration")
-    build_tab_global_series(nb_topics, root)
-    build_tab_global_compare_tokens(nb_topics, root)
-    build_tab_topic_trends_from_distribution(nb_topics, root)  # Initial-Verlaufsfunktion integriert
+    build_tab_global_series(nb_topics, root)              # TopDocs-Distributions/Year
+    build_tab_global_compare_tokens(nb_topics, root)      # TopDocs-Distribution vs. Tokens
+    build_tab_topic_trends_from_distribution(nb_topics, root)
 
-    # Hauptreiter 2: Tag-Topic-Exploration (Mapping)
+    # Reiter 2: Tag-Topic-Exploration (Mapping)
     nb_t2 = ttk.Notebook(nb_root); nb_root.add(nb_t2, text="Tag-Topic-Exploration")
-    build_tab_bubbles_rank_topn(nb_t2, root)
-    build_tab_bubbles_ranked_score(nb_t2, root)
-    build_tab_tag_relevance(nb_t2, root)
-    build_tab_topics_year_stacked(nb_t2, root)
-    build_tab_topics_year_poly(nb_t2, root)
-    build_tab_series_top10(nb_t2, root)
-    build_tab_compare_tokens_topics(nb_t2, root)
-    build_tab_top10_value_per_text_topic(nb_t2, root)  # NEU: Text/Rank-Tabelle
+    build_tab_bubbles_rank_topn(nb_t2, root)              # TT-Relevanz (Bubbles)
+    # build_tab_bubbles_ranked_score(nb_t2, root)          # ENTFERNT: Bubbles (Score nach …)
+    build_tab_tag_relevance(nb_t2, root)                  # Tag-Topic-Relevancescore
+    build_tab_topics_year_stacked(nb_t2, root)            # TT-Texts/Jahr (Stacked)
+    build_tab_topics_year_poly(nb_t2, root)               # TT-Texts/Jahr (Poly)
+    build_tab_series_top10(nb_t2, root)                   # T-Top10-T-Texts/Jahr (Global)
+    build_tab_compare_tokens_topics(nb_t2, root)          # Global: Tokens, Topics, TT-Texts
+    build_tab_top10_value_per_text_topic(nb_t2, root)     # TT-Texts-Rang
 
     root.mainloop()
 

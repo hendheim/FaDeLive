@@ -70,12 +70,14 @@ NETWORK_OUTPUT_DIR = EXPLORATION_DIR / "networks"
 SCATTER_OUTPUT_DIR = EXPLORATION_DIR / "scatterplots"
 DENDRO_OUTPUT_DIR = EXPLORATION_DIR / "dendrogramme"
 
-
 for d in [NETWORK_OUTPUT_DIR, SCATTER_OUTPUT_DIR, DENDRO_OUTPUT_DIR, EXPLORATION_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
 # DTM/TF-IDF: Spalten 0–23 = Metadaten (vom Nutzer vorgegeben)
 METADATA_COLS: int = 24
+
+# Suite-Name
+SUITE_NAME = "Korpus-Explorer-Suite"
 
 # =========================
 # Tk-Utils
@@ -98,7 +100,6 @@ def install_safe_exit(root: tk.Tk) -> None:
 
 
 def bring_front(win: tk.Toplevel | tk.Tk) -> None:
-    # Kein always-on-top -> Alt+Tab funktioniert
     win.update_idletasks()
     try: win.attributes("-topmost", False)
     except Exception: pass
@@ -108,36 +109,18 @@ def bring_front(win: tk.Toplevel | tk.Tk) -> None:
     except Exception: pass
 
 def install_focus_minimize(root: tk.Tk, enable: bool = True) -> None:
-    """
-    Minimiere das Fenster nur dann, wenn der Fokusverlust durch einen
-    Maus-Klick außerhalb verursacht wurde. Reines Mouse-Leave oder Alt+Tab
-    sollen NICHT minimieren.
-
-    Umsetzung: Wir werten im FocusOut-Event das state-Bitfeld aus.
-    Wenn während des Fokusverlustes ein Mausbutton gedrückt war,
-    sind Button-Masks gesetzt (Button1..3). Zusätzlich stellen wir sicher,
-    dass der Fokus wirklich das gesamte Tk verlässt (focus_displayof() ist None).
-    """
     if not enable:
         return
-
-    # Bitmasken für Button1..3 in Tk (X11/Win): 0x100, 0x200, 0x400
     BUTTON_MASK = 0x100 | 0x200 | 0x400
-
     def _on_focus_out(event):
         try:
-            # Fokus liegt nicht mehr auf irgendeinem Tk-Widget → Verlassen der App
             focus_inside = (root.focus_displayof() is not None)
-            # War beim Fokusverlust eine Maustaste gedrückt?
             st = getattr(event, "state", 0)
             mouse_down = bool(st & BUTTON_MASK)
             if (not focus_inside) and mouse_down:
                 root.iconify()
         except Exception:
-            # Failsafe: niemals hart crashen
             pass
-
-    # Nur auf dem Root binden, nicht global, damit interne Widget-Wechsel nicht feuern
     root.bind("<FocusOut>", _on_focus_out, add="+")
 
 # =========================
@@ -278,7 +261,6 @@ def choose_termset(root: tk.Tk, label_widget: Optional[tk.Label | ttk.Label] = N
 # DataManager (globale Laden)
 # =========================
 
-# bekannte Metadaten – niemals als Term werten
 META_NAME_BLACKLIST = {
     "_id", "id", "doc_id", "filename",
     "author", "author_surname", "author_surname_norm",
@@ -291,12 +273,11 @@ META_NAME_BLACKLIST = {
 
 class DataManager:
     def __init__(self) -> None:
-        # Default-Pfade
         self.path_corpus: Path = PROJECT_ROOT / "output" / "processed_corpus" / "korpus_stop.csv"
-        self.path_dtm: Path = PROJECT_ROOT / "output" / "dtm_tfidf_stop" / "dtm_minfreq6.csv"  # DTM/TF-IDF (sep=",")
+        self.path_dtm: Path = PROJECT_ROOT / "output" / "dtm_tfidf_stop" / "dtm_minfreq6.csv"
         self.path_topics: Path = RESOURCES_DIR / "topic-models" / "topics_v3" / "document-topics-distribution_tag.csv"
-        self.path_metadata: Path = PROJECT_ROOT / "data" / "raw" / "metadata.csv"  # sep=";"
-        self.path_tfidf_for_cloud: Path = PROJECT_ROOT / "output" / "dtm_tfidf_stop" / "tfidf-2000.csv"  # die EINE TF-IDF-Datei
+        self.path_metadata: Path = PROJECT_ROOT / "data" / "raw" / "metadata.csv"
+        self.path_tfidf_for_cloud: Path = PROJECT_ROOT / "output" / "dtm_tfidf_stop" / "tfidf-2000.csv"
 
         self.corpus_df: Optional[pd.DataFrame] = None
         self.dtm_df: Optional[pd.DataFrame] = None
@@ -316,17 +297,9 @@ class DataManager:
 
     @staticmethod
     def term_columns(df: pd.DataFrame) -> List[str]:
-        """
-        Robust: bevorzugt ab METADATA_COLS; zusätzlich Filter:
-        - numerische Spalten
-        - keine bekannten Metadaten-Namen (Blacklist)
-        """
         cols = list(df.columns)
-        # Kandidaten ab Offset
         cand = cols[METADATA_COLS:] if len(cols) > METADATA_COLS else []
-        # plus numerische außerhalb, falls Dateien Metadaten verschoben haben
         numeric = [c for c in cols if pd.api.types.is_numeric_dtype(df[c])]
-        # Exkludiere harte Metadaten
         def is_term(c: str) -> bool:
             cl = str(c).strip()
             return cl not in META_NAME_BLACKLIST
@@ -336,7 +309,6 @@ class DataManager:
     def load_corpus(self) -> pd.DataFrame:
         if self.corpus_df is not None: return self.corpus_df
         if not self.path_corpus.exists(): raise FileNotFoundError(f"Korpus fehlt: {self.path_corpus}")
-        # sep=";" (explizit)
         df = pd.read_csv(self.path_corpus, sep=";")
         col_text = self._detect_col(df, ["text", "clean_text", "content"])
         if col_text is None: raise ValueError("Keine Textspalte (text/clean_text/content) gefunden.")
@@ -362,14 +334,11 @@ class DataManager:
 
     def load_dtm(self) -> pd.DataFrame:
         if self.dtm_df is not None: return self.dtm_df
-        if not self.path_dtm.exists(): raise FileNotFoundError(f"DTM/TF-IDF fehlt: {self.path_dtm}")
-        # dtm/tfidf: sep="," (explizit)
+        if not self.path_dtm.exists(): raise FileNotFoundError(f"DTM fehlt: {self.path_dtm}")
         df = pd.read_csv(self.path_dtm)
-        # vereinheitliche Jahre
         if "year_first" in df.columns or "year" in df.columns:
             df = coalesce_years(df, "year_first", "year", "year_final")
         self.dtm_df = df
-        # Tokens/Jahr nur für DTM (heuristik: wenn keine "tfidf" im Dateinamen)
         fname = str(self.path_dtm.name).lower()
         if "tfidf" not in fname and "tf-idf" not in fname:
             self.tokens_per_year_df = self.tokens_per_year_from_dtm(df)
@@ -381,7 +350,6 @@ class DataManager:
         term_cols = self.term_columns(dtm)
         numeric_term_cols = [c for c in term_cols if pd.api.types.is_numeric_dtype(dtm[c])]
         freq_sum = dtm[numeric_term_cols].sum(axis=1, numeric_only=True)
-        # Jahr ableiten
         year_series = None
         for c in ("year_final", "year_first", "year"):
             if c in dtm.columns:
@@ -393,7 +361,7 @@ class DataManager:
 
     def load_topics(self) -> pd.DataFrame:
         if self.topics_df is not None: return self.topics_df
-        if not self.path_topics.exists(): raise FileNotFoundError(f"Topics-Datei fehlt: {self.path_topics}")
+        if not self.path_topics.exists(): raise FileNotFoundError(f"Document-Topic-Matrix fehlt: {self.path_topics}")
         df = pd.read_csv(self.path_topics, index_col=0)
         df.index = df.index.astype(str).str.replace(".txt", "", regex=False)
         def dec(col: str) -> str:
@@ -412,7 +380,6 @@ class DataManager:
     def load_metadata(self) -> pd.DataFrame:
         if self.metadata_df is not None: return self.metadata_df
         if not self.path_metadata.exists(): raise FileNotFoundError(f"Metadata fehlt: {self.path_metadata}")
-        # sep=";" (explizit)
         df = pd.read_csv(self.path_metadata, sep=";")
         df["_id"] = df["_id"].astype(str)
         df = coalesce_years(df, "year_first", "year", "Jahr_final")
@@ -422,9 +389,8 @@ class DataManager:
     def load_tfidf_for_cloud(self) -> pd.DataFrame:
         if self.tfidf_avg_df is not None: return self.tfidf_avg_df
         if not self.path_tfidf_for_cloud.exists(): raise FileNotFoundError(f"TF-IDF-Datei fehlt: {self.path_tfidf_for_cloud}")
-        df = pd.read_csv(self.path_tfidf_for_cloud)  # sep="," (Standard)
+        df = pd.read_csv(self.path_tfidf_for_cloud)
         expr = df.iloc[:, METADATA_COLS:]
-        # robuste Termauswahl: numerisch & nicht in Blacklist
         expr = expr[[c for c in expr.columns
                      if pd.api.types.is_numeric_dtype(expr[c]) and str(c) not in META_NAME_BLACKLIST]]
         avg = expr.mean(axis=0, numeric_only=True).reset_index()
@@ -469,17 +435,40 @@ def _mk_entry(parent, **kwargs):
 # =========================
 
 def get_term_columns_strict(df: pd.DataFrame) -> List[str]:
-    # bevorzugt DataManager-Logik
     cols = DATA.term_columns(df)
-    # zur Sicherheit: keine year*-Spalten
     cols = [c for c in cols if str(c) not in {"year", "year_first", "year_final", "Jahr_final"}]
     return cols
+
+# =========================
+# NEU: doc_id aus _id/id/filename sicherstellen
+# =========================
+
+def ensure_doc_id_inplace(df: pd.DataFrame) -> None:
+    """
+    Füllt/erstellt 'doc_id' aus doc_id | _id | id | filename (in dieser Priorität).
+    Ergebnis ist string-basiert und niemals leer.
+    """
+    candidates = ["doc_id", "_id", "id", "filename"]
+    src = None
+    for c in candidates:
+        if c in df.columns and not df[c].isna().all():
+            src = c
+            break
+    if src is None:
+        df["doc_id"] = (np.arange(1, len(df) + 1)).astype(str)
+        return
+    out = df[src].astype(str)
+    out = out.replace({"nan": "", "None": "", "NaN": ""})
+    mask_empty = (out.str.len() == 0)
+    if mask_empty.any():
+        filler = (np.arange(1, mask_empty.sum() + 1)).astype(str)
+        out.loc[mask_empty] = filler
+    df["doc_id"] = out
 
 # =========================
 # AUSDRÜCKE – Tabs
 # =========================
 
-# --- Frequenz (Vokab Top-N / Suche) ---
 def build_tab_vocab(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
     frame = ttk.Frame(parent_nb); parent_nb.add(frame, text="Frequenz")
 
@@ -514,7 +503,7 @@ def build_tab_vocab(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
 
         term_cols = get_term_columns_strict(dtm)
         if not term_cols:
-            messagebox.showerror("Fehler","Keine Termspalten in DTM/TF-IDF erkannt.", parent=root); return
+            messagebox.showerror("Fehler","Keine Termspalten in DTM erkannt.", parent=root); return
 
         sums = dtm[term_cols].sum(axis=0, numeric_only=True).sort_values(ascending=False)
         base = pd.DataFrame({"term": sums.index.astype(str), "freq": sums.values})
@@ -531,7 +520,6 @@ def build_tab_vocab(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
 
     ttk.Button(frame, text="Berechnen", command=run).grid(row=row+1, column=0, padx=6, pady=6, sticky="w")
 
-# --- TF-IDF Rang (Top-N + Suche, nutzt nur die eine TF-IDF-Datei) ---
 def build_tab_tfidf_rank(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
     frame = ttk.Frame(parent_nb); parent_nb.add(frame, text="TF-IDF-Rang")
 
@@ -560,9 +548,8 @@ def build_tab_tfidf_rank(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
     def run():
         nonlocal last_df
         try:
-            df = pd.read_csv(DATA.path_tfidf_for_cloud)  # sep=","
+            df = pd.read_csv(DATA.path_tfidf_for_cloud)
             expr = df.iloc[:, METADATA_COLS:]
-            # robuste Termauswahl: numerisch & nicht in Blacklist
             keep_cols = [c for c in expr.columns
                          if pd.api.types.is_numeric_dtype(expr[c]) and str(c) not in META_NAME_BLACKLIST]
             expr = expr[keep_cols]
@@ -586,7 +573,6 @@ def build_tab_tfidf_rank(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
 
     ttk.Button(frame, text="Berechnen", command=run).grid(row=row+1, column=0, padx=6, pady=6, sticky="w")
 
-# --- Dokument-Frequenz ---
 def build_tab_docfreq(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
     frame = ttk.Frame(parent_nb); parent_nb.add(frame, text="Dokument-Frequenz")
 
@@ -624,7 +610,7 @@ def build_tab_docfreq(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
     def run_count():
         nonlocal results_df
         try: dfc=DATA.load_corpus()
-        except Exception as e: messagebox.showerror("Fehler", f"Corpus nicht geladen: {e}", parent=root); return
+        except Exception as e: messagebox.showerror("Fehler", f"Korpus nicht geladen: {e}", parent=root); return
         terms=[t.strip() for t in ent_terms.get().split(",") if t.strip()]
         if not terms: messagebox.showerror("Fehler","Bitte Ausdrücke eingeben.", parent=root); return
         flags=0 if case_var.get() else re.IGNORECASE
@@ -659,7 +645,6 @@ def build_tab_docfreq(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
 
     ttk.Button(frame, text="Berechnen", command=run_count).grid(row=row+1, column=0, padx=6, pady=6, sticky="w")
 
-# --- Dokument-TF-IDF (nutzt TF-IDF-Matrix) ---
 def build_tab_doc_tfidf(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
     frame = ttk.Frame(parent_nb); parent_nb.add(frame, text="Dokument-TF-IDF")
 
@@ -690,12 +675,12 @@ def build_tab_doc_tfidf(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
 
     def run_calc():
         nonlocal results_df
-        # nur TF-IDF laden:
         try:
-            dtm = pd.read_csv(DATA.path_tfidf_for_cloud)  # sep=","
-            # vereinheitliche Jahre, falls vorhanden
+            dtm = pd.read_csv(DATA.path_tfidf_for_cloud)
             if "year_first" in dtm.columns or "year" in dtm.columns:
                 dtm = coalesce_years(dtm, "year_first", "year", "year_final")
+            # >>> sicherstellen: doc_id korrekt aus _id/id/filename
+            ensure_doc_id_inplace(dtm)
         except Exception as e:
             messagebox.showerror("Fehler", f"TF-IDF nicht geladen: {e}", parent=root); return
 
@@ -724,7 +709,6 @@ def build_tab_doc_tfidf(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
         out = dtm[meta_cols].copy()
         out["value"]=score
         out["terms"]=",".join(terms)
-        # Anzeigejahr
         year = out["year_final"].fillna(out["year"]).astype("Int64")
         out["year"]=year
 
@@ -740,7 +724,6 @@ def build_tab_doc_tfidf(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
 
     ttk.Button(frame, text="Berechnen", command=run_calc).grid(row=row+1, column=0, padx=6, pady=6, sticky="w")
 
-# --- Konkordanz ---
 def build_tab_concordance(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
     frame = ttk.Frame(parent_nb); parent_nb.add(frame, text="Konkordanz")
     row=0
@@ -774,7 +757,7 @@ def build_tab_concordance(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
     def run_conc():
         nonlocal results_df_conc
         try: df = DATA.load_corpus()
-        except Exception as e: messagebox.showerror("Fehler", f"Corpus nicht geladen: {e}", parent=root); return
+        except Exception as e: messagebox.showerror("Fehler", f"Korpus nicht geladen: {e}", parent=root); return
         query = ent_query.get().strip()
         if not query: messagebox.showerror("Fehler","Bitte Suchausdruck eingeben.",parent=root); return
         try:
@@ -800,12 +783,9 @@ def build_tab_concordance(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
 
     ttk.Button(frame, text="Suchen", command=run_conc).grid(row=row+1, column=0, padx=6, pady=6, sticky="w")
 
-# --- Kollokation (mit N-Grammen & Dokumentliste per Klick) ---
 def build_tab_collocations(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
-    """Kollokationen (robust, lazy Doc-Listing auf Selektion, N-Gramme, PMI/FREQ)."""
     frame = ttk.Frame(parent_nb); parent_nb.add(frame, text="Kollokation")
 
-    # --- UI ---
     row = 0
     ttk.Label(frame, text="Zielausdrücke (kommagetrennt):").grid(row=row, column=0, sticky="w", padx=6, pady=4)
     ent_targets = _mk_entry(frame, width=60); ent_targets.grid(row=row, column=1, sticky="we", padx=6, pady=4)
@@ -832,7 +812,6 @@ def build_tab_collocations(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
     ttk.Label(frame, text="Metrik:").grid(row=row, column=0, sticky="w", padx=6, pady=4)
     ttk.Combobox(frame, textvariable=metric_var, values=["FREQ", "PMI"], width=10, state="readonly").grid(row=row, column=1, sticky="w", padx=6, pady=4)
 
-    # --- Ergebnisliste der Kollokationen ---
     row += 1
     ttk.Label(frame, text="Kollokationsliste:").grid(row=row, column=0, sticky="w", padx=6, pady=4)
     tree = ttk.Treeview(frame, columns=("target", "collocate", "freq", "score"), show="headings", height=12)
@@ -844,7 +823,6 @@ def build_tab_collocations(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
     scroll.grid(row=row, column=3, sticky="ns")
     enable_treeview_sort(tree)
 
-    # --- Dokumentliste (on demand per Selektion) ---
     row += 1
     ttk.Label(frame, text="Dokumente (Klick auf Kollokation):").grid(row=row, column=0, sticky="w", padx=6, pady=4)
     cols_doc = ("doc_id", "year", "author_surname", "title", "freq")
@@ -857,7 +835,6 @@ def build_tab_collocations(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
     scroll2.grid(row=row, column=3, sticky="ns")
     enable_treeview_sort(tree_doc)
 
-    # --- Save-Buttons ---
     row += 1
     results_df: Optional[pd.DataFrame] = None
     docs_df: Optional[pd.DataFrame] = None
@@ -884,10 +861,8 @@ def build_tab_collocations(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
     )
     btn_save_docs.grid(row=row, column=2, padx=6, pady=6, sticky="e")
 
-    # --- Cache: Dokumentliste pro (target, collocate) ---
     docs_cache: Dict[Tuple[str, str], pd.DataFrame] = {}
 
-    # --- Helpers ---
     tok_re = re.compile(r"\w+|\S", flags=re.UNICODE)
 
     def tokenize_words(text: object) -> List[str]:
@@ -905,6 +880,7 @@ def build_tab_collocations(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
         for t in tokens:
             buf.append(t)
             if len(buf) == n:
+                # <<< Fix: mit Leerzeichen verbinden (statt "g")
                 yield " ".join(buf)
 
     def coalesce_year(row: pd.Series) -> str:
@@ -916,13 +892,12 @@ def build_tab_collocations(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
                     continue
         return ""
 
-    # --- Compute list (fast, no doc expansion) ---
     def compute():
         nonlocal results_df
         try:
             df = DATA.load_corpus()
         except Exception as e:
-            messagebox.showerror("Fehler", f"Corpus nicht geladen: {e}", parent=root); return
+            messagebox.showerror("Fehler", f"Korpus nicht geladen: {e}", parent=root); return
 
         targets = [t.strip().lower() for t in ent_targets.get().split(",") if t.strip()]
         if not targets:
@@ -936,13 +911,11 @@ def build_tab_collocations(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
         except Exception:
             messagebox.showerror("Fehler", "Fenster/TopN/MinFreq/N-Gram prüfen.", parent=root); return
 
-        # Zähler (keine Doc-Expansion hier!)
         total_tokens = 0
-        freq_w  = Counter()                 # Häufigkeit N-Gramm
-        freq_tw = defaultdict(Counter)      # (target -> collocate -> count)
-        freq_t  = Counter()                 # Häuﬁgkeit Ziel-Token (unigram)
+        freq_w  = Counter()
+        freq_tw = defaultdict(Counter)
+        freq_t  = Counter()
 
-        # UI reset
         tree.delete(*tree.get_children())
         tree_doc.delete(*tree_doc.get_children())
         btn_save_list.configure(state="disabled")
@@ -956,25 +929,20 @@ def build_tab_collocations(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
                 if not tokens:
                     continue
 
-                # Grundgesamtheit
                 ngram_stream = list(iter_ngrams(tokens, ng))
                 total_tokens += len(ngram_stream)
                 for w in ngram_stream:
                     freq_w[w] += 1
 
-                # Target-Hits (Targets sind Unigramme – gefällt der Nutzer so)
-                # (Wenn du Targets auch als N-Gramme willst, erweitere hier analog.)
                 for i, w in enumerate(tokens):
                     if w in targets:
                         freq_t[w] += 1
                         L = max(0, i - W)
                         R = min(len(tokens), i + W + 1)
-                        # Kontext ohne Target
                         if ng == 1:
                             ctx = tokens[L:i] + tokens[i+1:R]
                         else:
                             ctx = []
-                            # N-Gramme im Kontextfenster ohne Targetposition
                             left_tokens  = tokens[L:i]
                             right_tokens = tokens[i+1:R]
                             for g in iter_ngrams(left_tokens, ng):
@@ -984,7 +952,6 @@ def build_tab_collocations(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
                         for cw in ctx:
                             freq_tw[w][cw] += 1
 
-            # Ergebnisse (ohne Doc-Expansion)
             rows = []
             eps = 1e-12
             for t in targets:
@@ -1016,7 +983,6 @@ def build_tab_collocations(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
                          .groupby("target", as_index=False, group_keys=False)
                          .head(topn))
 
-            # Anzeige
             for _, r0 in res.iterrows():
                 tree.insert("", "end", values=(r0["target"], r0["collocate"], int(r0["freq"]), round(float(r0["score"]), 4)))
 
@@ -1028,7 +994,6 @@ def build_tab_collocations(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
         except Exception as e:
             messagebox.showerror("Fehler (Kollokation)", str(e), parent=root)
 
-    # --- On-Demand Dokumentliste pro Selektion ---
     def on_select(_event):
         nonlocal docs_df
         sel = tree.selection()
@@ -1039,7 +1004,6 @@ def build_tab_collocations(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
             return
         t, cw = str(vals[0]), str(vals[1])
 
-        # Wenn bereits im Cache
         key = (t, cw)
         df_cached = docs_cache.get(key)
         if df_cached is not None:
@@ -1053,11 +1017,10 @@ def build_tab_collocations(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
             btn_save_docs.configure(state="normal")
             return
 
-        # Sonst lazy berechnen
         try:
             df = DATA.load_corpus()
         except Exception as e:
-            messagebox.showerror("Fehler", f"Corpus nicht geladen: {e}", parent=root); return
+            messagebox.showerror("Fehler", f"Korpus nicht geladen: {e}", parent=root); return
 
         try:
             W  = max(1, int(ent_window.get().strip()))
@@ -1073,7 +1036,6 @@ def build_tab_collocations(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
                 if not tokens:
                     continue
 
-                # Positionen des Targets (unigram)
                 positions = [i for i, w in enumerate(tokens) if w == t]
                 if not positions:
                     continue
@@ -1086,7 +1048,6 @@ def build_tab_collocations(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
                         ctx = tokens[L:i] + tokens[i+1:R]
                         count_cw += sum(1 for token in ctx if token == cw)
                     else:
-                        # N-Gramme im Kontext ohne Targetposition
                         left_tokens  = tokens[L:i]
                         right_tokens = tokens[i+1:R]
                         for g in iter_ngrams(left_tokens, ng):
@@ -1110,7 +1071,7 @@ def build_tab_collocations(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
                          .sort_values(["freq", "year"], ascending=[False, True])
                          .fillna({"year": ""}))
 
-            docs_cache[key] = docs_df  # Cache ablegen
+            docs_cache[key] = docs_df
 
             tree_doc.delete(*tree_doc.get_children())
             for _, r in docs_df.iterrows():
@@ -1129,26 +1090,31 @@ def build_tab_collocations(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
 
     ttk.Button(frame, text="Berechnen", command=compute).grid(row=row+1, column=0, padx=6, pady=6, sticky="w")
 
-# --- Wortverläufe (nur DTM verwenden) ---
 def build_tab_wordtrends(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
     frame = ttk.Frame(parent_nb); parent_nb.add(frame, text="Wortverläufe")
 
     row=0
     ttk.Label(frame, text="Begriffe (kommagetrennt; exakte Spaltennamen):").grid(row=row, column=0, sticky="w", padx=6, pady=4)
     ent_terms=_mk_entry(frame, width=60); ent_terms.grid(row=row, column=1, sticky="we", padx=6, pady=4); frame.columnconfigure(1, weight=1)
+
     row+=1
     ttk.Label(frame, text="Glättung Fenster (roll. MW):").grid(row=row, column=0, sticky="w", padx=6, pady=4)
     ent_win=_mk_entry(frame, width=8); ent_win.insert(0,"5"); ent_win.grid(row=row, column=1, sticky="w", padx=6, pady=4)
+
     row+=1
     ttk.Label(frame, text="Poly-Grad (Regression):").grid(row=row, column=0, sticky="w", padx=6, pady=4)
     ent_deg=_mk_entry(frame, width=8); ent_deg.insert(0,"6"); ent_deg.grid(row=row, column=1, sticky="w", padx=6, pady=4)
+
     row+=1
-    absolute_var=tk.BooleanVar(value=False); smooth_var=tk.BooleanVar(value=True); poly_var=tk.BooleanVar(value=True)
-    ttk.Checkbutton(frame, text="Absolut", variable=absolute_var).grid(row=row, column=0, sticky="w", padx=6, pady=4)
+    absolute_var = tk.BooleanVar(value=False)
+    smooth_var   = tk.BooleanVar(value=True)
+    poly_var     = tk.BooleanVar(value=True)
+    ttk.Checkbutton(frame, text="Absolut",  variable=absolute_var).grid(row=row, column=0, sticky="w", padx=6, pady=4)
     ttk.Checkbutton(frame, text="Geglättet", variable=smooth_var).grid(row=row, column=1, sticky="w", padx=6, pady=4)
-    ttk.Checkbutton(frame, text="Polynom", variable=poly_var).grid(row=row, column=2, sticky="w", padx=6, pady=4)
+    ttk.Checkbutton(frame, text="Polynom",   variable=poly_var).grid(row=row, column=2, sticky="w", padx=6, pady=4)
+
     row+=1
-    ttk.Label(frame, text="Jahrbereich (leer = automatisch), z.B. 1782-1891:").grid(row=row, column=0, sticky="w", padx=6, pady=4)
+    ttk.Label(frame, text="Jahrbereich (leer = automatisch), z. B. 1782-1891:").grid(row=row, column=0, sticky="w", padx=6, pady=4)
     ent_range=_mk_entry(frame, width=20); ent_range.grid(row=row, column=1, sticky="w", padx=6, pady=4)
 
     last_trends_abs: Optional[pd.DataFrame] = None
@@ -1157,34 +1123,47 @@ def build_tab_wordtrends(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
     last_plot_ctx: str = ""
 
     row+=1
-    btn_save_csv = ttk.Button(frame, text="Daten (CSV) speichern", state="disabled",
-                              command=lambda: ask_save_df((last_trends_rel if last_trends_rel is not None else last_trends_abs),
-                                                          "Wortverläufe", last_plot_ctx, root))
-    btn_save_png = ttk.Button(frame, text="Plot (PNG) speichern", state="disabled",
-                              command=lambda: ask_save_current_figure("Wortverläufe", last_plot_ctx, root, fig=last_plot_fig))
+    btn_save_csv = ttk.Button(
+        frame, text="Daten (CSV) speichern", state="disabled",
+        command=lambda: ask_save_df((last_trends_rel if last_trends_rel is not None else last_trends_abs),
+                                    "Wortverläufe", last_plot_ctx, root)
+    )
+    btn_save_png = ttk.Button(
+        frame, text="Plot (PNG) speichern", state="disabled",
+        command=lambda: ask_save_current_figure("Wortverläufe", last_plot_ctx, root, fig=last_plot_fig)
+    )
     btn_save_csv.grid(row=row, column=0, padx=6, pady=6, sticky="w")
     btn_save_png.grid(row=row, column=1, padx=6, pady=6, sticky="w")
 
     def run():
         nonlocal last_trends_abs, last_trends_rel, last_plot_fig, last_plot_ctx
-        try: dtm=DATA.load_dtm()
-        except Exception as e: messagebox.showerror("Fehler", f"DTM nicht geladen: {e}", parent=root); return
-
-        terms_input=[t.strip() for t in ent_terms.get().split(",") if t.strip()]
-        if not terms_input: messagebox.showerror("Fehler","Bitte Begriffe eingeben.", parent=root); return
-        term_cols_all=set(get_term_columns_strict(dtm))
-        missing=[t for t in terms_input if t not in term_cols_all]
-        if missing: messagebox.showwarning("Hinweis", f"Nicht gefunden (Termspalten): {', '.join(missing)}", parent=root)
-        terms=[t for t in terms_input if t in term_cols_all]
-        if not terms: messagebox.showerror("Fehler","Kein Begriff gefunden.", parent=root); return
-
+        # 1) DTM laden – ohne Sonderprüfung: jede im „Daten“-Tab gesetzte Datei wird akzeptiert
         try:
-            win=max(1,int(ent_win.get().strip()))
-            deg=max(1,int(ent_deg.get().strip()))
+            dtm = DATA.load_dtm()
+        except Exception as e:
+            messagebox.showerror("Fehler", f"DTM nicht geladen: {e}", parent=root); return
+
+        # 2) Begriffe prüfen
+        terms_input = [t.strip() for t in ent_terms.get().split(",") if t.strip()]
+        if not terms_input:
+            messagebox.showerror("Fehler","Bitte Begriffe eingeben.", parent=root); return
+
+        term_cols_all = set(get_term_columns_strict(dtm))
+        missing = [t for t in terms_input if t not in term_cols_all]
+        if missing:
+            messagebox.showwarning("Hinweis", f"Nicht gefunden (Termspalten): {', '.join(missing)}", parent=root)
+        terms = [t for t in terms_input if t in term_cols_all]
+        if not terms:
+            messagebox.showerror("Fehler","Kein gültiger Begriff in der DTM gefunden.", parent=root); return
+
+        # 3) Parameter
+        try:
+            win = max(1, int(ent_win.get().strip()))
+            deg = max(1, int(ent_deg.get().strip()))
         except Exception:
             messagebox.showerror("Fehler","Glättungsfenster/Polygrad ungültig.", parent=root); return
 
-        # Jahrreihe
+        # 4) Jahre ermitteln (robust: year_final, sonst year_first/year)
         if "year_final" in dtm.columns:
             years_series = pd.to_numeric(dtm["year_final"], errors="coerce")
         elif "year_first" in dtm.columns or "year" in dtm.columns:
@@ -1192,87 +1171,99 @@ def build_tab_wordtrends(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
             tmp = coalesce_years(tmp, "year_first", "year", "year_final")
             years_series = pd.to_numeric(tmp["year_final"], errors="coerce")
         else:
-            messagebox.showerror("Fehler", "Keine Jahrspalten in DTM vorhanden.", parent=root); return
+            messagebox.showerror("Fehler", "Keine Jahrspalten in der DTM vorhanden.", parent=root); return
 
         def parse_year_range(s: pd.Series, raw: str) -> Tuple[int,int]:
-            s=s.dropna().astype(int)
-            if s.empty: return (1800,1900)
+            s = s.dropna().astype(int)
+            if s.empty: return (1800, 1900)
             if raw and "-" in raw:
-                a,b=raw.split("-",1)
+                a,b = raw.split("-",1)
                 return (int(a.strip()), int(b.strip()))
             return (int(s.min()), int(s.max()))
-        y_min,y_max=parse_year_range(years_series, ent_range.get().strip())
-        all_years=pd.DataFrame({"year": np.arange(y_min, y_max+1, dtype=int)})
+        y_min, y_max = parse_year_range(years_series, ent_range.get().strip())
+        all_years = pd.DataFrame({"year": np.arange(y_min, y_max+1, dtype=int)})
 
-        # Tokens/Jahr (nur für relative Frequenzen)
-        # Heuristik: wenn Datei keine tfidf im Namen hat, ist es DTM -> Tokenmengen berechnen
-        is_tfidf = ("tfidf" in str(DATA.path_dtm).lower()) or ("tf-idf" in str(DATA.path_dtm).lower())
-        if not is_tfidf:
+        # 5) Tokenmenge pro Jahr aus der DTM (Summe numerischer Termspalten)
+        try:
             if DATA.tokens_per_year_df is None:
                 DATA.tokens_per_year_df = DATA.tokens_per_year_from_dtm(dtm)
-            tpy=DATA.tokens_per_year_df.set_index("year")["anzahl_tokens"]
-        else:
-            tpy = pd.Series(dtype=float)
+            tpy = DATA.tokens_per_year_df.set_index("year")["anzahl_tokens"]
+        except Exception as e:
+            messagebox.showerror("Fehler", f"Tokenmengen pro Jahr konnten nicht aus der DTM ermittelt werden:\n{e}", parent=root); return
 
-        series_rel: Dict[str,pd.DataFrame]={}
-        series_abs: Dict[str,pd.DataFrame]={}
+        # 6) Reihen bauen (absolut & relativ pro 10.000 Tokens)
+        series_rel: Dict[str,pd.DataFrame] = {}
+        series_abs: Dict[str,pd.DataFrame] = {}
 
         for term in terms:
-            vals=dtm[term]
-            df_term=pd.DataFrame({"year": pd.to_numeric(years_series, errors="coerce").astype("Int64"), "value": vals})
-            df_term=df_term.dropna(subset=["year"]).groupby("year").sum().reset_index()
-            df_term=all_years.merge(df_term, on="year", how="left").fillna(0)
-            if not is_tfidf:
-                df_term["anzahl_tokens"]=df_term["year"].map(tpy).fillna(0)
-                df_term["rel"]=0.0; mask=df_term["anzahl_tokens"]>0
-                df_term.loc[mask,"rel"]=(df_term.loc[mask,"value"]/df_term.loc[mask,"anzahl_tokens"])*10000.0
-            else:
-                df_term["rel"]=df_term["value"]
-            series_rel[term]=df_term[["year","rel"]].copy()
-            series_abs[term]=df_term[["year","value"]].copy()
+            vals = pd.to_numeric(dtm[term], errors="coerce").fillna(0)
+            df_term = pd.DataFrame({
+                "year": pd.to_numeric(years_series, errors="coerce").astype("Int64"),
+                "value": vals
+            }).dropna(subset=["year"])
+            df_term = df_term.groupby("year").sum(numeric_only=True).reset_index()
+            df_term = all_years.merge(df_term, on="year", how="left").fillna(0)
+            df_term["anzahl_tokens"] = df_term["year"].map(tpy).fillna(0)
+
+            # relative Normierung nur dort, wo eine Tokenmenge > 0 vorliegt
+            df_term["rel"] = 0.0
+            mask = df_term["anzahl_tokens"] > 0
+            df_term.loc[mask, "rel"] = (df_term.loc[mask, "value"] / df_term.loc[mask, "anzahl_tokens"]) * 10000.0
+
+            series_abs[term] = df_term[["year","value"]].copy()
+            series_rel[term] = df_term[["year","rel"]].copy()
 
         last_trends_abs = pd.concat([d.assign(term=t).rename(columns={"value":"y"}) for t,d in series_abs.items()], ignore_index=True)
         last_trends_rel = pd.concat([d.assign(term=t).rename(columns={"rel":"y"}) for t,d in series_rel.items()], ignore_index=True)
 
+        # 7) Plots (mit Optionen)
+        # Absolut
         if absolute_var.get():
             fig = plt.figure(figsize=(12,6))
             for term, dfa in series_abs.items():
                 plt.plot(dfa["year"], dfa["value"], label=term)
-            plt.title("Rohfrequenzen der Ausdrücke" if not is_tfidf else "TF-IDF-Summe")
-            plt.xlabel("Jahr"); plt.ylabel("Frequenz" if not is_tfidf else "TF-IDF")
+            plt.title("Rohfrequenzen der Ausdrücke (pro Jahr, DTM-basiert)")
+            plt.xlabel("Jahr"); plt.ylabel("Frequenz")
             plt.grid(True); plt.tight_layout(); plt.legend()
             last_plot_fig = fig; last_plot_ctx = f"{'_'.join(terms)}_absolut"
             btn_save_csv.configure(state="normal"); btn_save_png.configure(state="normal")
             plt.show()
 
+        # Geglättet (relativ)
         if smooth_var.get():
             fig = plt.figure(figsize=(12,6))
             for term, dfr in series_rel.items():
-                sm=dfr["rel"].rolling(window=win, center=True, min_periods=1).mean()
+                sm = dfr["rel"].rolling(window=win, center=True, min_periods=1).mean()
                 plt.plot(dfr["year"], sm, label=f"{term} (MW)")
-            plt.title(f"Geglättete {'TF-IDF' if is_tfidf else 'relative Frequenz (pro 10.000)'}")
-            plt.xlabel("Jahr"); plt.ylabel("TF-IDF" if is_tfidf else "Rel. Frequenz pro 10.000")
+            plt.title("Geglättete relative Frequenz (pro 10.000, DTM-basiert)")
+            plt.xlabel("Jahr"); plt.ylabel("Rel. Frequenz pro 10.000")
             plt.grid(True); plt.tight_layout(); plt.legend()
             last_plot_fig = fig; last_plot_ctx = f"{'_'.join(terms)}_smooth{win}"
             btn_save_csv.configure(state="normal"); btn_save_png.configure(state="normal")
             plt.show()
 
+        # Polynom (relativ)
         if poly_var.get():
             fig = plt.figure(figsize=(12,6))
             for term, dfr in series_rel.items():
-                y=dfr["rel"].values; x=dfr["year"].astype(float).values
-                if np.unique(y).size<=1: continue
-                degree=min(deg, len(x)-1)
-                coeffs=np.polyfit(x,y,degree); xx=np.linspace(x.min(), x.max(), 200); yy=np.polyval(coeffs, xx)
+                y = dfr["rel"].values
+                x = dfr["year"].astype(float).values
+                if np.unique(y).size <= 1:
+                    continue
+                degree = min(deg, max(1, len(x) - 1))
+                coeffs = np.polyfit(x, y, degree)
+                xx = np.linspace(x.min(), x.max(), 200)
+                yy = np.polyval(coeffs, xx)
                 plt.plot(xx, yy, label=term)
-            plt.title(f"Polynomiale Regression (Grad {deg}) – relative Frequenz")
-            plt.xlabel("Jahr"); plt.ylabel("TF-IDF" if is_tfidf else "Rel. Frequenz pro 10.000")
+            plt.title(f"Polynomiale Regression (Grad {deg}) – relative Frequenz (DTM-basiert)")
+            plt.xlabel("Jahr"); plt.ylabel("Rel. Frequenz pro 10.000")
             plt.grid(True); plt.tight_layout(); plt.legend()
             last_plot_fig = fig; last_plot_ctx = f"{'_'.join(terms)}_poly{deg}"
             btn_save_csv.configure(state="normal"); btn_save_png.configure(state="normal")
             plt.show()
 
     ttk.Button(frame, text="Plotten", command=run).grid(row=row+1, column=0, padx=6, pady=6, sticky="w")
+
 
 # =========================
 # Wort-Vektor-Modell – Tabs
@@ -1399,7 +1390,6 @@ def build_tab_embed_compare(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
 
     ttk.Button(frame, text="Vergleichen", command=run).grid(row=row+1, column=0, padx=6, pady=6, sticky="w")
 
-# Netzwerk
 def build_graph(kv: KeyedVectors, keywords: List[str], topn: int, threshold: float) -> Tuple[nx.Graph, List[float]]:
     exclude_tokens = {".", ",", "!", "?", "...", ";", ":", "„", "“", '"', "'", "–", "—", "-", "(", ")", "[", "]", "{", "}"}
     G = nx.Graph(); similarities: List[float] = []
@@ -1626,7 +1616,6 @@ def build_tab_termset_cluster(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
 
     ttk.Button(frame, text="UMAP-Cluster berechnen", command=run).grid(row=row+1, column=0, padx=6, pady=8, sticky="w")
 
-# Wortwolke
 def build_tab_termset_wordcloud(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
     frame=ttk.Frame(parent_nb); parent_nb.add(frame, text="Wortwolke")
     row=0
@@ -1700,7 +1689,6 @@ def build_tab_termset_wordcloud(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
 
     ttk.Button(frame, text="Erzeugen", command=run).grid(row=row, column=0, padx=6, pady=6, sticky="w")
 
-# Dendrogramme
 def build_tab_termset_dendro(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
     frame = ttk.Frame(parent_nb); parent_nb.add(frame, text="Dendrogramme")
     row=0
@@ -1772,7 +1760,7 @@ def build_tab_termset_dendro(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
 def build_tab_topics(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
     frame=ttk.Frame(parent_nb); parent_nb.add(frame, text="Topicverläufe")
     row=0
-    ttk.Label(frame, text="Topics-Datei:").grid(row=row, column=0, sticky="w", padx=6, pady=4)
+    ttk.Label(frame, text="Document-Topic-Matrix:").grid(row=row, column=0, sticky="w", padx=6, pady=4)
     topics_label = ttk.Label(frame, text=str(DATA.path_topics)); topics_label.grid(row=row, column=1, sticky="w", padx=6, pady=4)
     def pick_topicsfile():
         p=filedialog.askopenfilename(parent=root, initialdir=str(DATA.path_topics.parent), filetypes=[("CSV","*.csv")])
@@ -1878,7 +1866,6 @@ def build_tab_topics(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
             plt.grid(True); plt.tight_layout()
             plt.show()
 
-        # Relevante Dokumente pro Jahr (Schwellwert)
         relevant_counts = pd.DataFrame(index=sorted(df['Jahr'].unique()))
         for topic_label in selected_topics:
             counts_per_year = df.groupby('Jahr')[topic_label].apply(lambda x: (x >= thr).sum())
@@ -1920,7 +1907,8 @@ def build_tab_topics(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
 def build_tab_data(root_nb: ttk.Notebook, root: tk.Tk) -> None:
     frame = ttk.Frame(root_nb); root_nb.add(frame, text="Daten")
     row=0
-    def row_pick(label: str, setter: callable, default_path: Path):
+
+    def row_pick_csv(label: str, setter: callable, default_path: Path, after: Optional[callable]=None):
         nonlocal row
         ttk.Label(frame, text=label).grid(row=row, column=0, sticky="w", padx=6, pady=4)
         var=tk.StringVar(value=str(default_path))
@@ -1929,41 +1917,120 @@ def build_tab_data(root_nb: ttk.Notebook, root: tk.Tk) -> None:
             p=filedialog.askopenfilename(parent=root, initialdir=str(default_path.parent), title=label,
                                          filetypes=[("CSV", "*.csv"), ("Alle Dateien", "*.*")])
             if p:
-                var.set(p); setter(Path(p))
+                var.set(p); setter(Path(p)); 
+                if after: after()
         ttk.Button(frame, text="…", width=3, command=browse).grid(row=row, column=2, sticky="w", padx=4)
         frame.columnconfigure(1, weight=1); row+=1
 
-    row_pick("Corpus:", lambda p:setattr(DATA, "path_corpus", p), DATA.path_corpus)
-    row_pick("Document-Term-Matrix:", lambda p:setattr(DATA, "path_dtm", p), DATA.path_dtm)
-    row_pick("Topics:", lambda p:setattr(DATA, "path_topics", p), DATA.path_topics)
-    row_pick("Metadata:", lambda p:setattr(DATA, "path_metadata", p), DATA.path_metadata)
-    row_pick("TF-IDF:", lambda p:setattr(DATA, "path_tfidf_for_cloud", p), DATA.path_tfidf_for_cloud)
+    def row_pick_model(label: str, default_path: Path):
+        nonlocal row
+        ttk.Label(frame, text=label).grid(row=row, column=0, sticky="w", padx=6, pady=4)
+        var=tk.StringVar(value=str(default_path))
+        ent=_mk_entry(frame, width=80, textvariable=var); ent.grid(row=row, column=1, sticky="we", padx=6, pady=4)
+        def browse():
+            global CURRENT_MODEL_PATH, W2V_GLOBAL
+            p=filedialog.askopenfilename(parent=root, initialdir=str(default_path.parent), title=label,
+                                         filetypes=[("Gensim Model","*.model"), ("KeyedVectors","*.kv"),
+                                                    ("Word2Vec Bin/Txt","*.bin *.txt *.gz"), ("Alle Dateien","*.*")])
+            if p:
+                var.set(p); CURRENT_MODEL_PATH = Path(p); W2V_GLOBAL = None
+        ttk.Button(frame, text="…", width=3, command=browse).grid(row=row, column=2, sticky="w", padx=4)
+        row+=1
+
+    def row_pick_termlist(label: str, default_path: Path):
+        nonlocal row
+        ttk.Label(frame, text=label).grid(row=row, column=0, sticky="w", padx=6, pady=4)
+        var=tk.StringVar(value=str(default_path))
+        ent=_mk_entry(frame, width=80, textvariable=var); ent.grid(row=row, column=1, sticky="we", padx=6, pady=4)
+        def browse():
+            global CURRENT_TERMLIST_PATH
+            p=filedialog.askopenfilename(parent=root, initialdir=str(default_path.parent), title=label,
+                                         filetypes=[("CSV","*.csv"), ("Alle Dateien","*.*")])
+            if p:
+                var.set(p); CURRENT_TERMLIST_PATH = Path(p)
+        ttk.Button(frame, text="…", width=3, command=browse).grid(row=row, column=2, sticky="w", padx=4)
+        row+=1
+
+    # CSV-Quellen
+    row_pick_csv("Korpus:", lambda p:setattr(DATA, "path_corpus", p) or setattr(DATA, "corpus_df", None), DATA.path_corpus)
+    row_pick_csv("Document-Term-Matrix:", 
+                 lambda p:(setattr(DATA, "path_dtm", p),
+                           setattr(DATA, "dtm_df", None),
+                           setattr(DATA, "tokens_per_year_df", None)),
+                 DATA.path_dtm)
+    row_pick_csv("Document-Topic-Matrix:", lambda p:setattr(DATA, "path_topics", p) or setattr(DATA, "topics_df", None), DATA.path_topics)
+    row_pick_csv("Metadata:", lambda p:setattr(DATA, "path_metadata", p) or setattr(DATA, "metadata_df", None), DATA.path_metadata)
+    row_pick_csv("TF-IDF:", lambda p:setattr(DATA, "path_tfidf_for_cloud", p) or setattr(DATA, "tfidf_avg_df", None), DATA.path_tfidf_for_cloud)
+
+    # Neu: globales Modell & Termliste
+    row_pick_model("Wort-Vektor-Modell:", CURRENT_MODEL_PATH)
+    row_pick_termlist("Termset:", CURRENT_TERMLIST_PATH)
 
     row+=1
-    info = tk.Text(frame, height=10, width=100); info.grid(row=row, column=0, columnspan=3, sticky="nsew", padx=6, pady=6)
+    info = tk.Text(frame, height=12, width=100); info.grid(row=row, column=0, columnspan=3, sticky="nsew", padx=6, pady=6)
     frame.rowconfigure(row, weight=1)
 
     def load_check():
         info.delete(1.0, tk.END); msgs=[]
-        try: DATA.corpus_df=None; dfc=DATA.load_corpus(); yrs=dfc["year_final"].dropna().astype(int)
-        except Exception as e: msgs=[f"❌ Corpus: {e}"]
-        else: msgs=[f"✅ Corpus: {len(dfc):,} Zeilen | Jahre: {yrs.min() if not yrs.empty else '—'}–{yrs.max() if not yrs.empty else '—'} | Spalten: {len(dfc.columns)}"]
-        try: DATA.dtm_df=None; dfd=DATA.load_dtm()
-        except Exception as e: msgs.append(f"❌ Document-Term-Matrix: {e}")
-        else:
+
+        # Korpus
+        try:
+            DATA.corpus_df=None; dfc=DATA.load_corpus(); yrs=dfc["year_final"].dropna().astype(int)
+            msgs.append(f"✅ Korpus: {len(dfc):,} Zeilen | Jahre: {yrs.min() if not yrs.empty else '—'}–{yrs.max() if not yrs.empty else '—'} | Spalten: {len(dfc.columns)}")
+        except Exception as e:
+            msgs.append(f"❌ Korpus: {e}")
+
+        # DTM (+ Tokens/Jahr)
+        try:
+            DATA.dtm_df=None; DATA.tokens_per_year_df=None
+            dfd=DATA.load_dtm()
             yrs = dfd.get("year_final", pd.Series(dtype=int))
             if not yrs.empty:
                 try: yrs=yrs.dropna().astype(int); yrspan=f"{yrs.min()}–{yrs.max()}"
                 except Exception: yrspan="—"
             else:
                 yrspan="—"
-            msgs.append(f"✅ Document-Term-Matrix: {len(dfd):,} Zeilen | Jahre: {yrspan} | Spalten: {len(dfd.columns)}")
-        try: DATA.topics_df=None; dft=DATA.load_topics(); msgs.append(f"✅ Topics: {dft.shape[0]:,} Docs × {dft.shape[1]:,} Topics")
-        except Exception as e: msgs.append(f"❌ Topics: {e}")
-        try: DATA.metadata_df=None; dfm=DATA.load_metadata(); msgs.append(f"✅ Metadata: {len(dfm):,} Zeilen")
-        except Exception as e: msgs.append(f"❌ Metadata: {e}")
-        try: DATA.tfidf_avg_df=None; dfa=DATA.load_tfidf_for_cloud(); msgs.append(f"✅ TF-IDF avg: {len(dfa):,} Terme")
-        except Exception as e: msgs.append(f"❌ TF-IDF avg: {e}")
+            tok = DATA.tokens_per_year_df
+            tok_msg = f"{int(tok['anzahl_tokens'].sum()):,} Tokens gesamt" if isinstance(tok, pd.DataFrame) and "anzahl_tokens" in tok.columns else "—"
+            msgs.append(f"✅ Document-Term-Matrix: {len(dfd):,} Zeilen | Jahre: {yrspan} | Spalten: {len(dfd.columns)} | Tokens/Jahr: {tok_msg}")
+        except Exception as e:
+            msgs.append(f"❌ Document-Term-Matrix: {e}")
+
+        # Topics
+        try:
+            DATA.topics_df=None; dft=DATA.load_topics(); msgs.append(f"✅ Topics: {dft.shape[0]:,} Docs × {dft.shape[1]:,} Topics")
+        except Exception as e:
+            msgs.append(f"❌ Topics: {e}")
+
+        # Metadata
+        try:
+            DATA.metadata_df=None; dfm=DATA.load_metadata(); msgs.append(f"✅ Metadata: {len(dfm):,} Zeilen")
+        except Exception as e:
+            msgs.append(f"❌ Metadata: {e}")
+
+        # TF-IDF avg
+        try:
+            DATA.tfidf_avg_df=None; dfa=DATA.load_tfidf_for_cloud(); msgs.append(f"✅ TF-IDF avg: {len(dfa):,} Terme")
+        except Exception as e:
+            msgs.append(f"❌ TF-IDF avg: {e}")
+
+        # W2V/Embeddings – jetzt in „Daten“ laden
+        try:
+            global W2V_GLOBAL
+            W2V_GLOBAL = load_w2v_or_kv(CURRENT_MODEL_PATH)
+            vocab_size = len(W2V_GLOBAL.key_to_index); dim = W2V_GLOBAL.vector_size
+            msgs.append(f"✅ Wort-Vektor-Modell: {vocab_size:,} Vokabeln × {dim} Dimensionen")
+        except Exception as e:
+            msgs.append(f"❌ Wort-Vektor-Modell: {e}")
+
+        # Termliste
+        try:
+            df_terms = load_termset_df(CURRENT_TERMLIST_PATH)
+            non_empty = int(df_terms.count().sum())
+            msgs.append(f"✅ Termliste: {non_empty:,} Einträge in {len(df_terms.columns)} Spalten")
+        except Exception as e:
+            msgs.append(f"❌ Termliste: {e}")
+
         info.insert(tk.END, "\n".join(msgs))
 
     ttk.Button(frame, text="Laden & Prüfen", command=load_check).grid(row=row+1, column=0, padx=6, pady=6, sticky="w")
@@ -1974,7 +2041,7 @@ def build_tab_data(root_nb: ttk.Notebook, root: tk.Tk) -> None:
 
 def main() -> None:
     root = tk.Tk()
-    root.title("Exploration Suite – Ausdrücke · Wort-Vektor-Modell · Termset · Topics")
+    root.title(f"{SUITE_NAME} – Ausdrücke · Wort-Vektor-Modell · Termset · Topics")
     install_safe_exit(root)
     bring_front(root)
     install_focus_minimize(root, enable=True)
@@ -1982,7 +2049,7 @@ def main() -> None:
     root_nb = ttk.Notebook(root)
     root_nb.pack(fill="both", expand=True)
 
-    # Daten
+    # Daten (zentraler Loader)
     build_tab_data(root_nb, root)
 
     # Oberreiter:
@@ -1992,26 +2059,26 @@ def main() -> None:
     nb_top  = ttk.Notebook(root_nb); root_nb.add(nb_top,   text="Topics")
 
     # Ausdrücke – Untertabs
-    build_tab_vocab(nb_expr, root)          # Frequenz (mit Rank; ohne year_final)
-    build_tab_tfidf_rank(nb_expr, root)     # TF-IDF-Rang (Top-N + Suche; ohne year_final; eine TF-IDF-Datei)
-    build_tab_docfreq(nb_expr, root)        # Dokument-Frequenz
-    build_tab_doc_tfidf(nb_expr, root)      # Dokument-TF-IDF (nur TF-IDF-Matrix)
-    build_tab_concordance(nb_expr, root)    # Konkordanz
-    build_tab_collocations(nb_expr, root)   # Kollokation (N-Gramme, Klick → Dokumentliste)
-    build_tab_wordtrends(nb_expr, root)     # Wortverläufe (nur DTM)
+    build_tab_vocab(nb_expr, root)
+    build_tab_tfidf_rank(nb_expr, root)
+    build_tab_docfreq(nb_expr, root)
+    build_tab_doc_tfidf(nb_expr, root)
+    build_tab_concordance(nb_expr, root)
+    build_tab_collocations(nb_expr, root)
+    build_tab_wordtrends(nb_expr, root)
 
     # Wort-Vektor-Modell – Untertabs
-    build_tab_embeddings(nb_w2v, root)      # Embeddings
-    build_tab_embed_compare(nb_w2v, root)   # Embeddings Vergleich (mit 'gemeinsame' Liste)
-    build_tab_network(nb_w2v, root)         # Netzwerk
+    build_tab_embeddings(nb_w2v, root)
+    build_tab_embed_compare(nb_w2v, root)
+    build_tab_network(nb_w2v, root)
 
     # Termset – Untertabs
-    build_tab_termset_cluster(nb_term, root)     # Cluster (UMAP)
-    build_tab_termset_wordcloud(nb_term, root)   # Wortwolke
-    build_tab_termset_dendro(nb_term, root)      # Dendrogramme
+    build_tab_termset_cluster(nb_term, root)
+    build_tab_termset_wordcloud(nb_term, root)
+    build_tab_termset_dendro(nb_term, root)
 
     # Topics – Untertabs
-    build_tab_topics(nb_top, root)               # Topicverläufe
+    build_tab_topics(nb_top, root)
 
     root.mainloop()
 

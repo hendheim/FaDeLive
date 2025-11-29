@@ -87,7 +87,7 @@ fadelive/
 ### Installation 
 Die Installation des Korpus setzt eine Umgebung mit python 3.11 voraus.
 Die Installation der benötigten Pakete ist möglich mit:
-- anaconda anhand von `environment.yml`
+- anaconda anhand von `environment.yml` (installiert auch python 3.11)
 `conda env create -f environment.yml`
 `conda activate fadelive`
 `pip install .`
