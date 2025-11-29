@@ -1,4 +1,4 @@
-# Projekttitel: FaDeLive: 1782-1891
+# Projekttitel: FaDeLive (1782-1891)
 
 Herausgeber: Hendrick Heimböckel, [ORCID-ID: 0000-0002-4211-9769](https://orcid.org/0000-0002-4211-9769)
 <br><br>
