@@ -282,7 +282,7 @@ Neben dem Tab *Daten* gibt es zwei Kategorien Abfragen und Visualisierungen:
    - Vergleich des Verlaufs von Tokens, Topics und Termset-Topic-Text-Verhältnisse (Visualisierung)
    - Rangliste der Texte relativ zu den Topics und zum Termset (Visualisierung)
 <br><br>
-### Projektstruktur
+# Projektstruktur
 ```
 fadelive
 │   environment.yml
