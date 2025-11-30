@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+message: "Bitte diese Software wie folgt zitieren:"
+authors:
+  - family-names: "Heimböckel"
+    given-names: "Hendrick"
+title: "fadelive"
+version: "0.1"
+doi: 
+date-released: ""
+url: "https://github.com/hendheim/fadelive"

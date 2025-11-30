@@ -282,7 +282,7 @@ Neben dem Tab *Daten* gibt es zwei Kategorien Abfragen und Visualisierungen:
    - Vergleich des Verlaufs von Tokens, Topics und Termset-Topic-Text-Verhältnisse (Visualisierung)
    - Rangliste der Texte relativ zu den Topics und zum Termset (Visualisierung)
 <br><br>
-# Projektstruktur
+### Projektstruktur
 ```
 fadelive
 │   environment.yml
@@ -377,3 +377,8 @@ fadelive
             gui_tag-topics-explorer.py
             statistics.py
 ```
+
+
+## Lizenz und Zitation 
+- **Zitation:** Empfohlene Zitierweise steht in der Datei _CITATION.cff_.
+- **Lizenz:** Rechte zur Nutzung und Weiterverarbeitung stehen in _LICENSE.md_.
