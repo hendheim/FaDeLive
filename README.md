@@ -130,13 +130,13 @@ Die Installation der benötigten Pakete ist möglich mit:
 10.  Erzeugung des Wort-Vektor-Modells des Korpus in `word2vec_models`
 <br><br>
 #### Konfiguration der Pipeline
-Bei dem Korpus handelt es sich um eine Sammlung historischer Texte, deren Verarbeitung angesichts der Normalisierung und der Entfernung von Stoppwörtern herausfordernd ist. Im Lauf des Projektes wurde die Vorverarbeitung kontinuierlich verbessert, um das Vokabular zu vereinheitlichen. Um auch die Reproduzierbarkeit der Verbesserung des Korpus im Laufe erster Experimente zu ermöglichen, kann die Pipeline `src/fadelive/pipeline_config.py` mit drei unterschiedlichen Konfigurationen ausgeführt werden :
+Bei dem Korpus handelt es sich um eine Sammlung historischer Texte, deren Verarbeitung angesichts der Normalisierung und der Entfernung von Stoppwörtern herausfordernd ist. Im Lauf des Projektes wurde die Vorverarbeitung kontinuierlich verbessert, um das Vokabular zu vereinheitlichen. Um auch die Reproduzierbarkeit der Verbesserung des Korpus im Laufe erster Experimente zu ermöglichen, kann die Pipeline `src/fadelive/pipeline_config.py` mit drei unterschiedlichen Konfigurationen ausgeführt werden:
 
-- `fadelive_v1.toml` mit `resources/replacements_v1.json`, `resources/stopwords_v1.txt`
+- `fadelive_v1.toml` mit `ocr_post-correction_dictionary_v1.txt`, `resources/replacements_v1.json`, `resources/stopwords_v1.txt`
 
-- `fadelive_v2.toml` mit `resources/replacements_v2.json`, `resources/stopwords_v1.txt`
+- `fadelive_v2.toml` mit `ocr_post-correction_dictionary_v2.txt`, `resources/replacements_v2.json`, `resources/stopwords_v1.txt`
 
-- `fadelive_v3.toml` mit `resources/replacements_v2.json`, `resources/stopwords_v3.txt`
+- `fadelive_v3.toml` mit `ocr_post-correction_dictionary_v2.txt`, `resources/replacements_v3.json`, `resources/stopwords_v2.txt`
 
 Das Korpus, das mit `fadelive_v3.toml` vorverarbeitet wird, ist die Version, in der die Verarbeitung des Vokabulars am besten normalisiert ist und Fehler bei der Ersetzung und der Entfernung von Stoppwörtern beseitigt wurden. 
 
@@ -302,7 +302,8 @@ fadelive
 │
 ├───resources
 │   │   morphmodel_ger.pgz
-│   │   ocr_post-correction_dictionary.txt
+│   │   ocr_post-correction_dictionary_v1.txt
+│   │   ocr_post-correction_dictionary_v2.txt
 │   │   replacements_v1.json
 │   │   replacements_v2.json
 │   │   replacements_v3.json

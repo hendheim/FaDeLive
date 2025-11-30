@@ -4,7 +4,7 @@ output_dir       = "output/processed_corpus"
 delimiter        = ";"
 replacements_path = "resources/replacements_v2.json"
 stopwords_path    = "resources/stopwords_v1.txt"
-salat_path        = "resources/ocr_post-correction_dictionary.txt"
+salat_path        = "resources/ocr_post-correction_dictionary_v2.txt"
 hanta_model       = "morphmodel_ger.pgz"
 
 [s01_2_vocabular]
