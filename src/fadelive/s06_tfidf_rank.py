@@ -3,46 +3,179 @@
 """
 Erstellt Ranglisten von Dokumenten auf Basis aller TF-IDF-2000-Matrizen.
 
-Für alle CSV-Dateien in einem Eingabeordner (rekursiv), deren Dateiname
-"tfidf-2000" enthält, wird:
+ÄNDERUNG v3 (Vollständige Flexibilisierung):
+- Verwendet standardisierte Metadaten-Erkennungsfunktionen aus dem Pipeline-System
+- Erweiterte ID-Erkennung (doc_id > _id > id > filename)
+- Content-Spalten-Ausschluss aus Features
+- Konsistent mit anderen v2/v3/v4-Modulen
+- Detaillierte Ausgabe über erkannte Spalten
 
-    1) die TF-IDF-Matrix eingelesen,
-    2) die relevanten TF-IDF-Spalten identifiziert,
+Für alle CSV-Dateien in einem Eingabeordner (rekursiv), deren Dateiname
+"tfidf" oder "dtm" enthält, wird:
+
+    1) die TF-IDF/DTM-Matrix eingelesen,
+    2) die relevanten Feature-Spalten identifiziert (automatisch),
     3) die Werte gefiltert (0 < tf-idf < 0.9),
     4) die wichtigsten Terme (Top-N) ermittelt,
     5) pro Dokument eine Summenkennzahl ("combined_sum") berechnet,
     6) eine Rangliste inkl. Metadaten aus der TF-IDF-Datei erstellt,
     7) eine Vergleichsmatrix der Top-N-Terme ausgegeben.
 
-Ausgaben (pro tfidf-2000-Datei):
+Ausgaben (pro tfidf-Datei):
 
-    <basisname>_stop_doc_rank.csv   – Rangliste mit Metadaten
-    <basisname>_stop_vocab_rank.csv – TF-IDF-Werte der Top-N Terme (Term x Dokument)
+    <basisname>_doc_rank.csv   – Rangliste mit Metadaten
+    <basisname>_vocab_rank.csv – TF-IDF-Werte der Top-N Terme (Term x Dokument)
 
 Beispielaufruf:
 
-    python src/fadelive/s06_tfidf_rank.py `
-        --input-dir output `
-        --output-dir output/tfidf_rank `
+    python s06_tfidf_rank_v3.py \
+        --input-dir output \
+        --output-dir output/tfidf_rank \
+        --pattern "tfidf-2000" \
         --top-n 2000
 """
 
 import argparse
 import os
 from pathlib import Path
+from typing import List, Optional, Tuple
+
 import pandas as pd
 
 
-# ---------------------------------------------------------
-# Hilfsfunktionen
-# ---------------------------------------------------------
+# =============================================================================
+# FLEXIBLE METADATEN-ERKENNUNG (standardisiert)
+# =============================================================================
 
-def collect_tfidf_files(input_dir: Path) -> list[Path]:
-    """Sammelt rekursiv alle CSV-Dateien, die 'tfidf-2000' im Namen tragen."""
+KNOWN_METADATA_NAMES = {
+    "_id", "id", "doc_id", "filename",
+    "author", "author_prename", "author_surname", "author_surname_norm", "author_address", "author_address_geo",
+    "editor_prename", "editor_surname",
+    "title", "title_norm", "title_addition",
+    "source", "journal", "magazine",
+    "year", "year_first", "year_final", "Jahr_final",
+    "volume", "edition", "issue", "pages", "pages_exzerpt",
+    "textclass", "genre", "address", "address_geo",
+    "lang", "language", "note", "archive",
+    "female_education",
+    # Content-Spalten (werden NICHT als Features gezählt!)
+    "content", "text", "clean_text", "content_min", "content_lem", "content_stop", "content_gen"
+}
+
+
+def identify_content_column(df: pd.DataFrame) -> Optional[str]:
+    """
+    Identifiziert die Content-Spalte flexibel.
+    
+    Priorität: content_gen > content_stop > content_lem > content_min > content > text > clean_text
+    """
+    candidates = [
+        "content_gen", "content_stop", "content_lem", "content_min",
+        "content", "text", "clean_text"
+    ]
+    lower_map = {str(c).lower(): c for c in df.columns}
+    
+    for cand in candidates:
+        if cand in df.columns:
+            return cand
+        lc = str(cand).lower()
+        if lc in lower_map:
+            return lower_map[lc]
+    
+    return None
+
+
+def identify_doc_id_column(df: pd.DataFrame) -> Optional[str]:
+    """
+    Identifiziert die Dokument-ID-Spalte flexibel.
+    
+    Priorität: doc_id > _id > id > filename
+    """
+    candidates = ["doc_id", "_id", "id", "filename"]
+    lower_map = {str(c).lower(): c for c in df.columns}
+    
+    for cand in candidates:
+        if cand in df.columns and df[cand].notna().any():
+            return cand
+        lc = str(cand).lower()
+        if lc in lower_map and df[lower_map[lc]].notna().any():
+            return lower_map[lc]
+    
+    return None
+
+
+def is_metadata_column(col_name: str) -> bool:
+    """Prüft, ob eine Spalte eine Metadaten-Spalte ist."""
+    col_lower = str(col_name).strip().lower()
+    if col_name in KNOWN_METADATA_NAMES or col_lower in {n.lower() for n in KNOWN_METADATA_NAMES}:
+        return True
+    return False
+
+
+def identify_feature_columns(df: pd.DataFrame, exclude_content: bool = True) -> List[str]:
+    """
+    Identifiziert Feature-Spalten (= numerische Spalten, die KEINE Metadaten sind).
+    
+    Args:
+        df: DataFrame
+        exclude_content: Wenn True, werden Content-Spalten ausgeschlossen
+    
+    Returns:
+        Liste der Feature-Spalten
+    """
+    feature_cols = []
+    content_col = identify_content_column(df) if exclude_content else None
+    
+    for col in df.columns:
+        # Content-Spalte ausschließen
+        if content_col and col == content_col:
+            continue
+        # Bekannte Metadaten ausschließen
+        if is_metadata_column(col):
+            continue
+        # Nur numerische Spalten
+        if pd.api.types.is_numeric_dtype(df[col]):
+            feature_cols.append(col)
+    
+    return feature_cols
+
+
+def identify_metadata_columns(df: pd.DataFrame) -> List[str]:
+    """
+    Identifiziert Metadaten-Spalten (alle nicht-Feature-Spalten).
+    
+    Returns:
+        Liste der Metadaten-Spalten
+    """
+    feature_cols = set(identify_feature_columns(df, exclude_content=True))
+    metadata_cols = []
+    
+    for col in df.columns:
+        if col not in feature_cols:
+            metadata_cols.append(col)
+    
+    return metadata_cols
+
+
+# =============================================================================
+# Hilfsfunktionen
+# =============================================================================
+
+def collect_tfidf_files(input_dir: Path, pattern: str = "tfidf") -> List[Path]:
+    """
+    Sammelt rekursiv alle CSV-Dateien, die das Pattern im Namen tragen.
+    
+    Args:
+        input_dir: Eingabeordner
+        pattern: Suchpattern (Standard: "tfidf")
+    
+    Returns:
+        Liste der gefundenen Dateien
+    """
     files = []
     for root, _, filenames in os.walk(input_dir):
         for fname in filenames:
-            if fname.endswith(".csv") and "tfidf-2000" in fname:
+            if fname.endswith(".csv") and pattern in fname:
                 files.append(Path(root) / fname)
     return files
 
@@ -51,9 +184,9 @@ def process_tfidf_file(
     tfidf_path: Path,
     output_dir: Path,
     top_n_terms: int = 2000,
-):
-    """Verarbeitet eine einzelne tfidf-2000-Datei (2 Outputs pro Datei)."""
-    print(f"➡ Verarbeite TF-IDF-Datei: {tfidf_path}")
+) -> None:
+    """Verarbeitet eine einzelne TF-IDF/DTM-Datei (2 Outputs pro Datei)."""
+    print(f"\n➡ Verarbeite Datei: {tfidf_path}")
 
     try:
         df = pd.read_csv(tfidf_path, encoding="utf-8")
@@ -61,48 +194,50 @@ def process_tfidf_file(
         print(f"   ⚠️ Fehler beim Einlesen, übersprungen: {e}")
         return
 
-    # ID-Spalte finden (_id oder id)
-    if "id" in df.columns:
-        df["id"] = df["id"].astype(str)
-        df = df.rename(columns={"id": "_id"})
-    elif "_id" in df.columns:
-        df["_id"] = df["_id"].astype(str)
-    else:
-        print(f"   ⚠️ Datei ohne 'id' oder '_id' – übersprungen: {tfidf_path}")
+    # Metadaten und Features automatisch trennen (mit standardisierten Funktionen)
+    meta_cols = identify_metadata_columns(df)
+    feature_cols = identify_feature_columns(df, exclude_content=True)
+    
+    if not feature_cols:
+        print(f"   ⚠️ Keine Feature-Spalten erkannt – übersprungen")
         return
+    
+    # Content-Spalte erkennen (falls vorhanden, sollte aber nicht in TF-IDF sein)
+    content_col = identify_content_column(df)
+    if content_col:
+        print(f"   ⚠️ Warnung: Content-Spalte '{content_col}' in TF-IDF-Datei gefunden (wird ignoriert)")
+    
+    print(f"   📋 Erkannt: {len(meta_cols)} Metadaten, {len(feature_cols)} Features")
 
-    # Metadaten-Spalten, die NICHT als TF-IDF-Features interpretiert werden sollen
-    META_COLS = {
-        "_id", "author_prename", "author_surname", "title", "source", "year",
-        "editor_prename", "editor_surname", "volume", "title_addition",
-        "year_first", "edition", "issue", "pages", "pages_exzerpt", "archive",
-        "author_address", "address", "genre", "textclass", "note",
-        "female_education", "author_address_geo", "address_geo"
-    }
-
-    meta_cols_in_df = [c for c in df.columns if c in META_COLS]
-    tfidf_cols = [c for c in df.columns if c not in META_COLS]
-
-    if not tfidf_cols:
-        print(f"   ⚠️ Keine TF-IDF-Spalten erkannt – übersprungen: {tfidf_path}")
+    # ID-Spalte finden (flexibel mit standardisierter Funktion)
+    id_col = identify_doc_id_column(df)
+    
+    if id_col is None:
+        print(f"   ⚠️ Keine ID-Spalte gefunden – übersprungen")
+        print(f"   Verfügbare Spalten: {', '.join(df.columns[:10])}")
         return
+    
+    print(f"   🔑 ID-Spalte: {id_col}")
+    
+    df[id_col] = df[id_col].astype(str)
 
-    # TF-IDF als numerisch erzwingen
-    df[tfidf_cols] = df[tfidf_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0)
+    # Features als numerisch erzwingen
+    df[feature_cols] = df[feature_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0)
 
     # Filter: nur Werte im Bereich (0, 0.9)
-    masked = df[tfidf_cols].where((df[tfidf_cols] > 0) & (df[tfidf_cols] < 0.9), 0.0)
+    masked = df[feature_cols].where((df[feature_cols] > 0) & (df[feature_cols] < 0.9), 0.0)
 
     # Wichtigste Terme nach aufsummierter (gefilterter) Stärke
-    tfidf_summen = masked.sum(axis=0)
+    feature_summen = masked.sum(axis=0)
 
     # Begrenzen auf vorhandene Terme
-    top_n = min(top_n_terms, len(tfidf_summen))
+    top_n = min(top_n_terms, len(feature_summen))
     if top_n == 0:
-        print(f"   ⚠️ Keine sinnvollen TF-IDF-Werte in Datei – übersprungen: {tfidf_path}")
+        print(f"   ⚠️ Keine sinnvollen Werte in Datei – übersprungen")
         return
 
-    top_terms = tfidf_summen.nlargest(top_n).index.tolist()
+    top_terms = feature_summen.nlargest(top_n).index.tolist()
+    print(f"   📊 Top-{top_n} Terme ausgewählt")
 
     # Summenbildung je Dokument über diese Top-Terme
     df["combined_sum"] = df[top_terms].sum(axis=1)
@@ -112,14 +247,21 @@ def process_tfidf_file(
     df_sorted["rank"] = range(1, len(df_sorted) + 1)
 
     # Rangliste mit Metadaten aus derselben Datei
-    # Nur Metadaten-Spalten, die tatsächlich vorhanden sind (ohne _id doppelt)
-    meta_cols_no_id = [c for c in meta_cols_in_df if c != "_id"]
-    rank_cols = ["_id"] + meta_cols_no_id + ["combined_sum", "rank"]
+    # Nur vorhandene Metadaten-Spalten verwenden (ohne Content)
+    available_meta_cols = [
+        c for c in meta_cols 
+        if c in df_sorted.columns and c != id_col and c != content_col
+    ]
+    rank_cols = [id_col] + available_meta_cols + ["combined_sum", "rank"]
     rank_with_meta = df_sorted[rank_cols].copy()
-    rank_with_meta = rank_with_meta.rename(columns={"_id": "id"})
+    
+    # ID-Spalte standardisieren zu "id" (aber nur wenn nicht schon "id")
+    if id_col != "id":
+        rank_with_meta = rank_with_meta.rename(columns={id_col: "id"})
+        print(f"   🔄 ID-Spalte '{id_col}' → 'id'")
 
     # Vergleichsmatrix: Term x Dokument (nur Top-Terme)
-    vergleich_df = df_sorted.set_index("_id")[top_terms].transpose()
+    vergleich_df = df_sorted.set_index(id_col)[top_terms].transpose()
     vergleich_df.columns.name = None
 
     # Dateinamen ableiten
@@ -132,36 +274,38 @@ def process_tfidf_file(
     rank_with_meta.to_csv(rang_full_pfad, index=False, encoding="utf-8")
     vergleich_df.to_csv(vergleichspfad, encoding="utf-8")
 
-    print(f"   ✔ Rangliste gespeichert: {rang_full_pfad}")
-    print(f"   ✔ Vergleichsmatrix gespeichert: {vergleichspfad}")
+    print(f"   ✅ Rangliste: {rang_full_pfad.name} ({len(rank_with_meta)} Dokumente)")
+    print(f"   ✅ Vergleich: {vergleichspfad.name} ({len(vergleich_df)} Terme)")
 
 
-# ---------------------------------------------------------
+# =============================================================================
 # run-Funktion für Pipeline
-# ---------------------------------------------------------
+# =============================================================================
 
 def run(
     input_dir: Path,
     output_dir: Path,
+    pattern: str = "tfidf",
     top_n: int = 2000,
 ) -> None:
-    """Erzeugt für jede gefundene tfidf-2000-CSV-Datei genau zwei Outputs im output_dir."""
+    """Erzeugt für jede gefundene TF-IDF/DTM-CSV-Datei genau zwei Outputs im output_dir."""
     input_dir = input_dir.resolve()
     output_dir = output_dir.resolve()
 
     print(f"📁 Eingabeordner: {input_dir}")
     print(f"📁 Ausgabeordner: {output_dir}")
+    print(f"🔎 Suchpattern: '{pattern}'")
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    print("🔎 Suche tfidf-2000-Dateien …")
-    files = collect_tfidf_files(input_dir)
+    print("\n🔍 Suche TF-IDF/DTM-Dateien …")
+    files = collect_tfidf_files(input_dir, pattern)
 
     if not files:
-        print("⚠️ Keine tfidf-2000-Dateien gefunden.")
+        print(f"⚠️ Keine Dateien mit Pattern '{pattern}' gefunden.")
         return
 
-    print(f"✔ {len(files)} Datei(en) gefunden.\n")
+    print(f"✅ {len(files)} Datei(en) gefunden.")
 
     for f in files:
         process_tfidf_file(
@@ -170,28 +314,53 @@ def run(
             top_n_terms=top_n,
         )
 
-    print("\n✅ Verarbeitung abgeschlossen.")
+    print("\n" + "="*60)
+    print("✅ Verarbeitung abgeschlossen.")
+    print("="*60)
 
 
-# ---------------------------------------------------------
+# =============================================================================
 # Argumente (mit optionalem argv)
-# ---------------------------------------------------------
+# =============================================================================
 
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Erzeugt Ranglisten aus allen tfidf-2000-CSV-Dateien eines Ordners."
+        description="Erzeugt Ranglisten aus TF-IDF/DTM-CSV-Dateien.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+FLEXIBILISIERUNG v3:
+  - Automatische Content-Spalten-Erkennung (werden ausgeschlossen)
+  - Erweiterte ID-Erkennung (doc_id > _id > id > filename)
+  - Flexible Feature-Erkennung (numerisch, keine Metadaten)
+  - Konsistent mit anderen Pipeline-Modulen
+
+Beispiele:
+  # Alle tfidf-2000-Dateien
+  python s06_tfidf_rank_v3.py --input-dir output --output-dir output/tfidf_rank --pattern "tfidf-2000"
+  
+  # Alle dtm-Dateien
+  python s06_tfidf_rank_v3.py --input-dir output --output-dir output/dtm_rank --pattern "dtm-"
+  
+  # Alle tfidf-Dateien (Standard)
+  python s06_tfidf_rank_v3.py --input-dir output --output-dir output/tfidf_rank
+        """
     )
     parser.add_argument(
         "--input-dir",
         required=True,
         type=Path,
-        help="Eingabeordner, in dem tfidf-2000-CSV-Dateien gesucht werden (rekursiv).",
+        help="Eingabeordner, in dem TF-IDF/DTM-CSV-Dateien gesucht werden (rekursiv).",
     )
     parser.add_argument(
         "--output-dir",
         required=True,
         type=Path,
         help="Zielordner für Ranglisten & Vergleichsmatrizen.",
+    )
+    parser.add_argument(
+        "--pattern",
+        default="tfidf",
+        help="Suchpattern für Dateinamen (Standard: 'tfidf').",
     )
     parser.add_argument(
         "--top-n",
@@ -202,16 +371,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-# ---------------------------------------------------------
+# =============================================================================
 # Main (CLI-Wrapper)
-# ---------------------------------------------------------
+# =============================================================================
 
-def main(argv: list[str] | None = None) -> None:
+def main(argv: Optional[List[str]] = None) -> None:
     args = parse_args(argv)
 
     run(
         input_dir=args.input_dir,
         output_dir=args.output_dir,
+        pattern=args.pattern,
         top_n=args.top_n,
     )
 

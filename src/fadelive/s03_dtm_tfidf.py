@@ -4,34 +4,60 @@
 Erzeugt DTM- und TF-IDF-Matrizen aus dem vollständig
 vorverarbeiteten Stopwort-Korpus 'korpus_stop.csv'.
 
-Dokumente mit leerem oder nur trivialem Inhalt werden *nicht* berücksichtigt.
+ÄNDERUNG v2:
+- Arbeitet mit content_stop (nicht "content")
+- Flexible Metadaten-Handhabung: Alle Spalten außer content_stop werden als Metadaten behandelt
+- OUTPUT: Nur Metadaten + Features (KEINE Content-Spalte in den Matrizen!)
+- Keine feste Metadaten-Liste mehr
+- Dokumente mit leerem oder trivialem Inhalt werden nicht berücksichtigt
 
 Eingabe:
-    output/processed_corpus/korpus_stop.csv
+    output/processed_corpus/korpus_stop.csv (mit content_stop)
 
 Ausgaben:
     output/dtm_tfidf_stop/
-        dtm-500.csv
-        dtm-1000.csv
-        dtm-2000.csv
-        tfidf-500.csv
-        tfidf-1000.csv
-        tfidf-2000.csv
-        dtm_minfreq6.csv
+        dtm-500.csv (Metadaten + 500 Features)
+        dtm-1000.csv (Metadaten + 1000 Features)
+        dtm-2000.csv (Metadaten + 2000 Features)
+        tfidf-500.csv (Metadaten + 500 Features)
+        tfidf-1000.csv (Metadaten + 1000 Features)
+        tfidf-2000.csv (Metadaten + 2000 Features)
+        dtm_minfreq6.csv (Metadaten + Features mit min. 6 Vorkommen)
 
 Beispielaufruf:
 
-    python src/fadelive/s03_dtm_tfidf.py `
-        --input output/processed_corpus/korpus_stop.csv `
-        --output output/dtm_tfidf_stop `
+    python s03_dtm_tfidf_v2.py \
+        --input output/processed_corpus/korpus_stop.csv \
+        --output output/dtm_tfidf_stop \
         --sep ";"
-
 """
 
 import argparse
 import pandas as pd
 from pathlib import Path
 from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
+
+
+# ---------------------------------------------------------
+# Metadaten-Erkennung
+# ---------------------------------------------------------
+
+def identify_content_column(df: pd.DataFrame) -> str:
+    """
+    Identifiziert die Content-Spalte (content_stop, content_lem oder content_min).
+    
+    Returns:
+        Name der Content-Spalte
+    """
+    for col in ["content_stop", "content_lem", "content_min", "content_gen"]:
+        if col in df.columns:
+            return col
+    raise ValueError("Keine Content-Spalte gefunden (content_stop/content_lem/content_min/content_gen)")
+
+
+def identify_metadata_columns(df: pd.DataFrame, content_col: str) -> list[str]:
+    """Identifiziert alle Metadaten-Spalten (= alles außer der Content-Spalte)."""
+    return [col for col in df.columns if col != content_col]
 
 
 # ---------------------------------------------------------
@@ -43,19 +69,25 @@ def safe_filename(name: str) -> str:
     return str(name).replace(" ", "_").replace("/", "_").replace("\\", "_")
 
 
-def load_corpus(path: Path, sep: str = ",") -> pd.DataFrame:
-    """Lädt das Korpus und entfernt alle Dokumente ohne echten Inhalt."""
+def load_corpus(path: Path, sep: str = ",") -> tuple[pd.DataFrame, str]:
+    """
+    Lädt das Korpus und entfernt alle Dokumente ohne echten Inhalt.
+    
+    Returns:
+        (DataFrame, content_column_name)
+    """
 
     if not path.exists():
         raise FileNotFoundError(f"❌ Eingabedatei nicht gefunden: {path}")
 
     df = pd.read_csv(path, sep=sep, encoding="utf-8")
 
-    if "content" not in df.columns:
-        raise ValueError("❌ Spalte 'content' fehlt im Korpus.")
+    # Content-Spalte identifizieren
+    content_col = identify_content_column(df)
+    print(f"📋 Erkannte Content-Spalte: {content_col}")
 
     # content normalisieren
-    df["content"] = df["content"].fillna("").astype(str)
+    df[content_col] = df[content_col].fillna("").astype(str)
 
     # Entferne Dokumente ohne Inhalt:
     # - leer
@@ -66,7 +98,7 @@ def load_corpus(path: Path, sep: str = ",") -> pd.DataFrame:
         return bool(s_clean.strip())
 
     before = len(df)
-    df = df[df["content"].apply(has_real_text)].copy()
+    df = df[df[content_col].apply(has_real_text)].copy()
     after = len(df)
 
     dropped = before - after
@@ -75,13 +107,17 @@ def load_corpus(path: Path, sep: str = ",") -> pd.DataFrame:
         raise ValueError("❌ Kein einziges Dokument enthält verwertbaren Inhalt.")
 
     if dropped > 0:
-        print(f"⚠ {dropped} Dokument(e) wegen fehlendem Inhalt übersprungen.")
+        print(f"⚠️  {dropped} Dokument(e) wegen fehlendem Inhalt übersprungen.")
 
-    return df
+    return df, content_col
 
 
 def save_matrix(df_meta: pd.DataFrame, matrix, terms, out_file: Path):
-    """Kombiniert Metadaten + Matrix und speichert sie."""
+    """
+    Kombiniert Metadaten + Matrix und speichert sie.
+    
+    WICHTIG: Keine Content-Spalte in der Ausgabe!
+    """
     df_matrix = pd.DataFrame(matrix, columns=terms)
 
     df_out = pd.concat(
@@ -99,35 +135,49 @@ def save_matrix(df_meta: pd.DataFrame, matrix, terms, out_file: Path):
 # Matrizen erzeugen
 # ---------------------------------------------------------
 
-def create_matrix(df: pd.DataFrame, name: str, vectorizer, output_dir: Path):
-    """Berechnet eine DTM/TF-IDF und speichert sie."""
+def create_matrix(
+    df: pd.DataFrame,
+    content_col: str,
+    metadata_cols: list[str],
+    name: str,
+    vectorizer,
+    output_dir: Path
+):
+    """Berechnet eine DTM/TF-IDF und speichert sie (ohne Content-Spalte!)."""
     print(f"➡ Erzeuge Matrix: {name}")
 
     if df.empty:
-        print(f"⚠ Übersprungen: Kein Dokument mit Inhalt (Matrix {name}).")
+        print(f"⚠️  Übersprungen: Kein Dokument mit Inhalt (Matrix {name}).")
         return
 
-    V = vectorizer.fit_transform(df["content"])
+    V = vectorizer.fit_transform(df[content_col])
     if V.shape[1] == 0:
-        print(f"⚠ Keine Terme für {name}. Matrix wird übersprungen.")
+        print(f"⚠️  Keine Terme für {name}. Matrix wird übersprungen.")
         return
 
     terms = vectorizer.get_feature_names_out()
     matrix = V.toarray()
 
-    meta_cols = [c for c in df.columns if c != "content"]
-    df_meta = df[meta_cols].copy()
+    # Nur vorhandene Metadaten verwenden (OHNE Content!)
+    available_meta_cols = [c for c in metadata_cols if c in df.columns]
+    df_meta = df[available_meta_cols].copy()
 
     out_file = output_dir / f"{safe_filename(name)}.csv"
     save_matrix(df_meta, matrix, terms, out_file)
 
 
-def create_frequency_based_matrix(df: pd.DataFrame, min_freq: int, output_dir: Path):
-    """Erzeugt eine DTM aller Wörter, die mindestens min_freq Vorkommen haben."""
+def create_frequency_based_matrix(
+    df: pd.DataFrame,
+    content_col: str,
+    metadata_cols: list[str],
+    min_freq: int,
+    output_dir: Path
+):
+    """Erzeugt eine DTM aller Wörter, die mindestens min_freq Vorkommen haben (ohne Content!)."""
     print(f"➡ Erzeuge DTM (min. {min_freq} Vorkommen)")
 
     vec = CountVectorizer()
-    V = vec.fit_transform(df["content"])
+    V = vec.fit_transform(df[content_col])
 
     terms = vec.get_feature_names_out()
     freqs = V.toarray().sum(axis=0)
@@ -136,13 +186,16 @@ def create_frequency_based_matrix(df: pd.DataFrame, min_freq: int, output_dir: P
     selected_terms = freq_df[freq_df["freq"] >= min_freq]["term"].tolist()
 
     if not selected_terms:
-        print(f"⚠ Keine Terme erfüllen die Bedingung ≥ {min_freq}. Übersprungen.")
+        print(f"⚠️  Keine Terme erfüllen die Bedingung ≥ {min_freq}. Übersprungen.")
         return
 
     full_matrix = pd.DataFrame(V.toarray(), columns=terms)
     filtered_matrix = full_matrix[selected_terms]
 
-    df_meta = df.drop(columns=["content"])
+    # Nur vorhandene Metadaten verwenden (OHNE Content!)
+    available_meta_cols = [c for c in metadata_cols if c in df.columns]
+    df_meta = df[available_meta_cols].copy()
+    
     df_out = pd.concat([df_meta.reset_index(drop=True),
                         filtered_matrix.reset_index(drop=True)], axis=1)
 
@@ -150,6 +203,7 @@ def create_frequency_based_matrix(df: pd.DataFrame, min_freq: int, output_dir: P
     df_out.to_csv(out_file, index=False, encoding="utf-8")
 
     print(f"✔ Gespeichert: {out_file}")
+
 
 # ---------------------------------------------------------
 # run-Funktion für Pipeline
@@ -163,7 +217,12 @@ def run(
     """Erstellt DTM- und TF-IDF-Matrizen aus einem Stopwort-Korpus."""
 
     print(f"📄 Lade Korpus: {input_path}")
-    df = load_corpus(input_path, sep=sep)
+    df, content_col = load_corpus(input_path, sep=sep)
+
+    # Metadaten automatisch erkennen (ohne Content!)
+    metadata_cols = identify_metadata_columns(df, content_col)
+    print(f"📋 Erkannte Metadaten-Spalten: {', '.join(metadata_cols)}")
+    print(f"ℹ️  Content-Spalte ({content_col}) wird NICHT in den Matrizen gespeichert")
 
     vectorizers = {
         "dtm-500": CountVectorizer(max_features=500),
@@ -177,9 +236,9 @@ def run(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     for name, vec in vectorizers.items():
-        create_matrix(df, name, vec, output_dir)
+        create_matrix(df, content_col, metadata_cols, name, vec, output_dir)
 
-    create_frequency_based_matrix(df, min_freq=6, output_dir=output_dir)
+    create_frequency_based_matrix(df, content_col, metadata_cols, min_freq=6, output_dir=output_dir)
 
     print("\n✅ Alle Matrizen wurden erfolgreich erzeugt.")
 

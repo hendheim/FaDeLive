@@ -4,9 +4,16 @@
 Erzeugt DTM- und TF-IDF-Matrizen sowie Cosinus-Matrizen für definierte
 Zeitintervalle aus dem vorverarbeiteten Korpus 'korpus_stop.csv'.
 
+ÄNDERUNG v2:
+- Arbeitet mit content_stop (nicht "content")
+- Flexible Metadaten-Handhabung: Alle Spalten außer content_stop werden als Metadaten behandelt
+- OUTPUT: DTM/TF-IDF enthalten nur Metadaten + Features (KEINE Content-Spalte!)
+- year/year_first werden speziell für Intervall-Filterung verwendet (year_first hat Vorrang)
+- Automatische Trennung von Metadaten und Features bei Cosinus-Berechnung
+
 Basis:
-    - Eingabekorpus enthält Stopwort-bereinigte Texte in der Spalte 'content'
-    - Metadaten wie _id, year, year_first, author_surname, title, etc.
+    - Eingabekorpus enthält Stopwort-bereinigte Texte in der Spalte 'content_stop'
+    - Metadaten (flexibel, besonders year/year_first für Intervalle)
 
 Für jedes Zeitintervall:
     1) Auswahl der Dokumente nach Jahr (year_first hat Vorrang vor year)
@@ -16,26 +23,24 @@ Für jedes Zeitintervall:
     5) Speicherung aller Matrizen als CSV
 
 Eingabe (Standardidee):
-    output/processed_corpus/korpus_stop.csv
+    output/processed_corpus/korpus_stop.csv (mit content_stop)
 
 Ausgaben (Beispiel):
-    output/intervals/dtm/
-        1782-1852_dtm-2000_stop.csv
-        1782-1852_tfidf-2000_stop.csv
+    output/intervals/dtm_tfidf_stop/
+        1782-1852_dtm-2000_stop.csv (Metadaten + Features, keine Content-Spalte!)
+        1782-1852_tfidf-2000_stop.csv (Metadaten + Features, keine Content-Spalte!)
         ...
-    output/intervals/cosine/
-        1782-1852_cos_tfidf-2000_stop.csv
+    output/intervals/cosine_stop/
+        1782-1852_cos_tfidf-2000_stop.csv (nur Cosinus-Matrix mit Doc-IDs)
         ...
 
 Beispielaufruf:
 
-    python src/fadelive/s05_dtm_tfidf_cos_intervals.py `
-        --input output/processed_corpus/korpus_stop.csv `
-        --dtm-output output/intervals/dtm_tfidf_stop `
-        --cos-output output/intervals/cosine_stop `
+    python s05_dtm_tfidf_cos_intervals_v2.py \
+        --input output/processed_corpus/korpus_stop.csv \
+        --dtm-output output/intervals/dtm_tfidf_stop \
+        --cos-output output/intervals/cosine_stop \
         --sep ";"
-
-
 """
 
 import argparse
@@ -67,18 +72,66 @@ MATRIX_TYPES = {
     "tfidf-2000": TfidfVectorizer(max_features=2000),
 }
 
-# Metadaten, die auf jeden Fall mit in die DTM/TF-IDF-Datei sollen
-DEFAULT_METADATA_FIELDS = [
-    "_id",
-    "author_surname",
-    "title",
-    "year",
-    "source",
-    "genre",
-    "author_address",
-    "address",
-    "textclass",
-]
+
+# ---------------------------------------------------------
+# Metadaten-Erkennung
+# ---------------------------------------------------------
+
+def identify_content_column(df: pd.DataFrame) -> str:
+    """
+    Identifiziert die Content-Spalte (content_stop, content_lem, content_min oder content_gen).
+    
+    Returns:
+        Name der Content-Spalte
+    """
+    for col in ["content_stop", "content_lem", "content_min", "content_gen"]:
+        if col in df.columns:
+            return col
+    raise ValueError("Keine Content-Spalte gefunden (content_stop/content_lem/content_min/content_gen)")
+
+
+def identify_metadata_columns(df: pd.DataFrame, content_col: str) -> list[str]:
+    """Identifiziert alle Metadaten-Spalten (= alles außer der Content-Spalte)."""
+    return [col for col in df.columns if col != content_col]
+
+
+def has_column(df: pd.DataFrame, col: str) -> bool:
+    """Prüft, ob eine Spalte existiert und nicht-leere Werte enthält."""
+    return col in df.columns and df[col].notna().any()
+
+
+def identify_metadata_and_features(df: pd.DataFrame) -> tuple[list[str], list[str]]:
+    """
+    Trennt automatisch Metadaten von TF-IDF-Features.
+    
+    Strategie:
+    - Metadaten = nicht-numerische Spalten ODER bekannte Metadaten-Namen
+    - Features = numerische Spalten, die nicht zu bekannten Metadaten gehören
+    
+    Returns:
+        (metadata_columns, feature_columns)
+    """
+    # Bekannte Metadaten-Namen
+    KNOWN_METADATA = {
+        "_id", "id", "author_prename", "author_surname", "title", "source", "year",
+        "editor_prename", "editor_surname", "volume", "title_addition",
+        "year_first", "edition", "issue", "pages", "pages_exzerpt", "archive",
+        "author_address", "address", "genre", "textclass", "note",
+        "female_education", "author_address_geo", "address_geo"
+    }
+    
+    metadata_cols = []
+    feature_cols = []
+    
+    for col in df.columns:
+        if col in KNOWN_METADATA:
+            metadata_cols.append(col)
+        elif not pd.api.types.is_numeric_dtype(df[col]):
+            metadata_cols.append(col)
+        else:
+            feature_cols.append(col)
+    
+    return metadata_cols, feature_cols
 
 
 # ---------------------------------------------------------
@@ -90,27 +143,40 @@ def safe_filename(s: str) -> str:
     return str(s).replace(" ", "_").replace("/", "_").replace("\\", "_")
 
 
-def load_corpus(path: Path, sep: str = ",") -> pd.DataFrame:
-    """Lädt das Korpus und bereitet year/year_first und content vor."""
+def load_corpus(path: Path, sep: str = ",") -> tuple[pd.DataFrame, str]:
+    """
+    Lädt das Korpus und bereitet year/year_first und content vor.
+    
+    Returns:
+        (DataFrame, content_column_name)
+    """
     if not path.exists():
         raise FileNotFoundError(f"❌ Eingabedatei nicht gefunden: {path}")
 
     df = pd.read_csv(path, sep=sep, encoding="utf-8")
 
-    if "content" not in df.columns:
-        raise ValueError("❌ Spalte 'content' fehlt im Korpus.")
+    # Content-Spalte identifizieren
+    content_col = identify_content_column(df)
+    print(f"📋 Erkannte Content-Spalte: {content_col}")
 
     # content auf String + fehlende Werte abfangen
-    df["content"] = df["content"].fillna("").astype(str)
+    df[content_col] = df[content_col].fillna("").astype(str)
 
     # Jahrspalten in Zahlen konvertieren
-    year = pd.to_numeric(df.get("year"), errors="coerce")
-    year_first = pd.to_numeric(df.get("year_first"), errors="coerce")
+    if "year" in df.columns:
+        year = pd.to_numeric(df["year"], errors="coerce")
+    else:
+        year = pd.Series(dtype=float)
+    
+    if "year_first" in df.columns:
+        year_first = pd.to_numeric(df["year_first"], errors="coerce")
+    else:
+        year_first = pd.Series(dtype=float)
 
     # effective_year: year_first hat Vorrang, sonst year
     df["effective_year"] = year_first.combine_first(year)
 
-    return df
+    return df, content_col
 
 
 def subset_interval(df: pd.DataFrame, start: int, end: int) -> pd.DataFrame:
@@ -122,19 +188,25 @@ def subset_interval(df: pd.DataFrame, start: int, end: int) -> pd.DataFrame:
     # year-Spalte auf effective_year setzen (für die Ausgabe)
     if not sub.empty:
         sub = sub.copy()
-        sub["year"] = sub["effective_year"].astype(int)
+        if "year" in sub.columns:
+            sub["year"] = sub["effective_year"].astype(int)
 
     return sub
 
 
-def create_matrix(df: pd.DataFrame, matrix_name: str, vectorizer, text_field: str) -> tuple[pd.DataFrame, list[str]]:
+def create_matrix(
+    df: pd.DataFrame,
+    content_col: str,
+    matrix_name: str,
+    vectorizer,
+) -> tuple[pd.DataFrame, list[str]]:
     """
-    Erzeugt eine DTM/TF-IDF-Matrix aus df[text_field] und gibt
+    Erzeugt eine DTM/TF-IDF-Matrix aus df[content_col] und gibt
     (Matrix-DataFrame, Feature-Liste) zurück.
     """
     print(f"    ➡ Erzeuge Matrix: {matrix_name}")
 
-    texts = df[text_field].fillna("").astype(str)
+    texts = df[content_col].fillna("").astype(str)
     if texts.str.strip().eq("").all():
         raise ValueError("Alle Texte in diesem Intervall sind leer.")
 
@@ -147,21 +219,28 @@ def create_matrix(df: pd.DataFrame, matrix_name: str, vectorizer, text_field: st
 
 def save_dtm_with_metadata(
     df_interval: pd.DataFrame,
+    content_col: str,
     matrix_df: pd.DataFrame,
     interval_name: str,
     matrix_name: str,
     text_field: str,
     out_dir: Path,
 ):
-    """Speichert Metadaten + Matrix als CSV."""
-    # Metadaten-Spalten bestimmen
-    meta_cols = [c for c in DEFAULT_METADATA_FIELDS if c in df_interval.columns]
-    if not meta_cols:
-        # Fallback: alle Spalten außer content und effective_year
-        meta_cols = [c for c in df_interval.columns if c not in ["content", "effective_year"]]
-
-    meta_df = df_interval[meta_cols].reset_index(drop=True)
-    out_df = pd.concat([meta_df, matrix_df.reset_index(drop=True)], axis=1)
+    """
+    Speichert Metadaten + Matrix als CSV (OHNE Content-Spalte!).
+    """
+    # Metadaten-Spalten automatisch erkennen (ohne Content!)
+    meta_cols = identify_metadata_columns(df_interval, content_col)
+    
+    # Nur vorhandene Metadaten verwenden (ohne effective_year)
+    available_meta_cols = [c for c in meta_cols if c in df_interval.columns and c != "effective_year"]
+    
+    if not available_meta_cols:
+        # Fallback: nur Matrix speichern
+        out_df = matrix_df.reset_index(drop=True)
+    else:
+        meta_df = df_interval[available_meta_cols].reset_index(drop=True)
+        out_df = pd.concat([meta_df, matrix_df.reset_index(drop=True)], axis=1)
 
     filename = f"{interval_name}_{matrix_name}_{text_field}.csv"
     out_path = out_dir / safe_filename(filename)
@@ -193,9 +272,15 @@ def compute_and_save_cosine(
 
     cos = cosine_similarity(M)
 
-    # Dokument-IDs bestimmen (falls _id existiert, sonst laufende Nummern)
-    if "_id" in df_interval.columns:
-        doc_ids = df_interval["_id"].fillna("").astype(str).tolist()
+    # Dokument-IDs bestimmen (flexibel)
+    id_col = None
+    for possible_id in ["_id", "id"]:
+        if possible_id in df_interval.columns:
+            id_col = possible_id
+            break
+    
+    if id_col:
+        doc_ids = df_interval[id_col].fillna("").astype(str).tolist()
     else:
         doc_ids = [f"doc_{i}" for i in range(len(df_interval))]
 
@@ -207,6 +292,7 @@ def compute_and_save_cosine(
     cos_df.to_csv(out_path, index=True, encoding="utf-8")
 
     print(f"    ✔ Cosinus-Matrix gespeichert: {out_path}")
+
 
 # ---------------------------------------------------------
 # Run-Funktion für Pipeline
@@ -221,16 +307,25 @@ def run(
     """Erzeugt DTM/TF-IDF- und Cosinus-Matrizen für Zeitintervalle aus korpus_stop."""
 
     print(f"📄 Lade Korpus: {input_path}")
-    df = load_corpus(input_path, sep=sep)
+    df, content_col = load_corpus(input_path, sep=sep)
 
-    text_field = "content"
+    # Metadaten anzeigen
+    metadata_cols = identify_metadata_columns(df, content_col)
+    print(f"📋 Erkannte Metadaten: {', '.join(metadata_cols)}")
+    print(f"ℹ️  Content-Spalte ({content_col}) wird NICHT in den Matrizen gespeichert")
+
+    # Prüfen ob year/year_first vorhanden
+    if not (has_column(df, "year") or has_column(df, "year_first")):
+        raise ValueError("❌ Korpus enthält weder 'year' noch 'year_first'-Spalte. Intervalle können nicht angewendet werden.")
+
+    text_field = "stop"  # historisch konsistent benannt
 
     for interval_name, (start, end) in INTERVALS.items():
         print(f"\n⏳ Verarbeite Intervall {interval_name} ({start}–{end}) …")
 
         df_interval = subset_interval(df, start, end)
         if df_interval.empty:
-            print(f"    ⚠ Keine Dokumente im Intervall {interval_name} gefunden.")
+            print(f"    ⚠️  Keine Dokumente im Intervall {interval_name} gefunden.")
             continue
 
         print(f"    ✔ {len(df_interval)} Dokument(e) im Intervall {interval_name}.")
@@ -239,17 +334,18 @@ def run(
         tfidf_matrix_df = None  # merken für Cosinus
         for matrix_name, vectorizer in MATRIX_TYPES.items():
             try:
-                matrix_df, terms = create_matrix(df_interval, matrix_name, vectorizer, text_field)
+                matrix_df, terms = create_matrix(df_interval, content_col, matrix_name, vectorizer)
             except ValueError as e:
-                print(f"    ⚠ Übersprungen ({matrix_name}): {e}")
+                print(f"    ⚠️  Übersprungen ({matrix_name}): {e}")
                 continue
 
             save_dtm_with_metadata(
                 df_interval=df_interval,
+                content_col=content_col,
                 matrix_df=matrix_df,
                 interval_name=interval_name,
                 matrix_name=matrix_name,
-                text_field="stop",  # historisch konsistent benannt
+                text_field=text_field,
                 out_dir=dtm_output,
             )
 
@@ -264,17 +360,17 @@ def run(
                     df_interval=df_interval,
                     interval_name=interval_name,
                     matrix_name="tfidf-2000",
-                    text_field="stop",
+                    text_field=text_field,
                     out_dir=cos_output,
                 )
             except ValueError as e:
-                print(f"    ⚠ Cosinus-Berechnung übersprungen: {e}")
+                print(f"    ⚠️  Cosinus-Berechnung übersprungen: {e}")
 
     print("\n✅ Alle Intervalle verarbeitet.")
 
 
 # ---------------------------------------------------------
-# Argumente (jetzt mit argv-Parameter)
+# Argumente
 # ---------------------------------------------------------
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -285,7 +381,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--input",
         required=True,
         type=Path,
-        help="Pfad zur Eingabedatei (korpus_stop.csv).",
+        help="Pfad zur Eingabedatei (korpus_stop.csv mit content_stop).",
     )
     parser.add_argument(
         "--dtm-output",

@@ -31,6 +31,11 @@ replacements_path = "resources/replacements_v1.json"
 stopwords_path    = "resources/stopwords_v1.txt"
 salat_path        = "resources/ocr_post-correction_dictionary.txt"
 hanta_model       = "morphmodel_ger.pgz"
+# Optional: Satzzeichen (. ! ?) als eigene Tokens entfernen
+# remove_sentence_punct = true
+# Optional: Zeitintervalle für separate Dateien (Format: "YYYY-YYYY")
+# Beispiel: intervals = ["1782-1852", "1853-1864", "1865-1876"]
+intervals = ["1782-1852", "1853-1864", "1865-1876"]
 
 [step6_s03_dtm_tfidf]
 input_path = "output/processed_corpus/korpus_stop.csv"
@@ -56,6 +61,12 @@ top_n      = 2000
 input_dir = "output/processed_corpus"
 output_dir = "output/word2vec_models"
 pattern   = "korpus_gen*.csv"
+delimiter = ";"
+# Hinweis: Parameter werden automatisch an Korpusgröße angepasst
+# - KLEIN   (<100k Tokens):  vector_size=100, window=3,  min_count=3
+# - MITTEL  (100k-1M):       vector_size=150, window=5,  min_count=8
+# - GROSS   (>1M):           vector_size=175, window=10, min_count=8
+# Intervall-Dateien (korpus_gen_YYYY-YYYY.csv) werden automatisch erkannt
 
 [run]
-steps = ["10"]  # optional: "1","2","3","4","6","7","8","9",
+steps = ["1","2","3","4","6","7","8","9","10"]  # optional: "1","2","3","4","6","7","8","9","10"

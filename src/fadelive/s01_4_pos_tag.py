@@ -3,6 +3,11 @@
 POS-Tagging für ein JSON-Vokabular. Nutzbar als CLI, als Python-Modul
 oder als importierbare Pipeline-Funktion.
 
+ÄNDERUNG v2:
+- Keine Änderungen nötig: Dieses Modul arbeitet nur mit JSON-Vokabularen,
+  nicht direkt mit Metadaten aus dem Korpus
+- Bleibt unverändert, da es keine Metadaten-Spalten verarbeitet
+
 JSON-Format:
 
 {
@@ -17,9 +22,9 @@ JSON-Format:
 
 Beispielaufruf: 
 
-    python src/fadelive/s01_4_pos_tag.py `
-        --input output/vocabular/vocab_full_stop.json `
-        --output output/vocabular/vocab_top5000_stop_pos.csv `
+    python s01_4_pos_tag_v2.py \
+        --input output/vocabular/vocab_full_stop.json \
+        --output output/vocabular/vocab_top5000_stop_pos.csv \
         --model de_core_news_lg
 """
 
@@ -40,10 +45,9 @@ from spacy.tokens import Token
 # ---------------------------------------------------------
 def load_vocab(path, limit: int = 5000) -> List[Tuple[str, int]]:
     """
-    Lädt ein JSON-Vokabular und gibt eine Liste mit den Top-5000-Ausdrücken aus (word, count) zurück.
+    Lädt ein JSON-Vokabular und gibt eine Liste mit den Top-N-Ausdrücken aus (word, count) zurück.
     Akzeptiert sowohl String- als auch Path-Argumente.
     """
-    # 👉 NEU: immer in Path umwandeln, egal ob String oder Path übergeben wurde
     path = Path(path)
 
     if not path.is_file():
@@ -109,37 +113,51 @@ def run(
     model="de_core_news_lg",
     limit=5000
 ):
+    """
+    Führt POS-Tagging auf einem JSON-Vokabular aus.
+    
+    Args:
+        input_json: Pfad zur JSON-Vokabular-Datei
+        output_csv: Pfad zur Ausgabe-CSV
+        model: spaCy-Modellname
+        limit: Anzahl der Top-Wörter
+    
+    Returns:
+        Pfad zur erstellten CSV-Datei
+    """
     vocab = load_vocab(input_json, limit=limit)
 
-    # Hier direkt spaCy laden
     nlp = spacy.load(model)
 
     df = pos_tag_vocab(vocab, nlp)
     df.to_csv(output_csv, index=False, encoding="utf-8")
+    
+    print(f"✅ POS-Tagging abgeschlossen: {output_csv}")
+    
     return output_csv
 
 
 # ---------------------------------------------------------
 # CLI
 # ---------------------------------------------------------
-def parse_cli():
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="POS-Tagging eines JSON-Vokabulars")
     parser.add_argument("--input", required=True, help="Pfad zur JSON-Datei")
     parser.add_argument("--output", default="vocab_stop_pos.csv", help="Ausgabe-CSV")
     parser.add_argument("--model", default="de_core_news_lg", help="spaCy-Modellname")
-    return parser.parse_args()
+    parser.add_argument("--limit", default=5000, type=int, help="Anzahl Top-Wörter")
+    return parser.parse_args(argv)
 
 
-def main():
-    args = parse_cli()
+def main(argv: list[str] | None = None):
+    args = parse_args(argv)
     print(f"📥 Lade JSON: {args.input}")
     print(f"🧠 Lade Modell: {args.model}")
 
-    output = run(args.input, args.output, args.model)
+    output = run(args.input, args.output, args.model, args.limit)
 
     print(f"💾 Fertig! Ergebnis gespeichert unter: {output}")
 
 
-# Modulstart
 if __name__ == "__main__":
     main()

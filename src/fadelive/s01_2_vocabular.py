@@ -1,31 +1,31 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-Erstellt Vokabulare aus den Preprocessing-Ausgaben:
+Erstellt Vokabulare aus den Preprocessing-Ausgaben.
 
-- Vokabular des gesamten Korpus
-- Vokabular je Textklasse
-- Vokabular je Zeitintervall
-- Vokabular je Genre
+ÄNDERUNG v2:
+- Arbeitet mit den neuen Content-Spaltennamen: content_min, content_lem, content_stop
+- Flexible Metadaten-Handhabung
+- year/year_first werden speziell für Zeitintervalle verwendet
+- textclass und genre werden dynamisch erkannt (falls vorhanden)
 
 Input-Dateien:
-    korpus_min.csv
-    korpus_lem.csv
-    korpus_stop.csv
+    korpus_min.csv (mit content_min)
+    korpus_lem.csv (mit content_lem)
+    korpus_stop.csv (mit content_stop)
 
 Ausgabe:
     vocab_full_<variant>.json
-    vocab_textclass_<variant>_<textclass>.json
-    vocab_interval_<variant>_<interval>.json
-    vocab_genre_<variant>_<genre>.json
+    vocab_textclass_<variant>_<textclass>.json (falls textclass-Spalte existiert)
+    vocab_interval_<variant>_<interval>.json (falls year/year_first existiert)
+    vocab_genre_<variant>_<genre>.json (falls genre-Spalte existiert)
 
 Beispielaufruf: 
 
-    python src/fadelive/s01_02_vocabular.py `
-        --input-dir output/processed_corpus `
-        --output-dir output/vocabular `
+    python s01_2_vocabular_v2.py \
+        --input-dir output/processed_corpus \
+        --output-dir output/vocabular \
         --delimiter ";"
-
 """
 
 import argparse
@@ -50,6 +50,28 @@ def analyze_vocabulary(texts: Iterable[str]) -> Counter:
 
 
 # ---------------------------------------------------------
+# Metadaten-Erkennung
+# ---------------------------------------------------------
+
+def identify_content_column(df: pd.DataFrame) -> str:
+    """
+    Identifiziert die Content-Spalte (content_min, content_lem oder content_stop).
+    
+    Returns:
+        Name der Content-Spalte
+    """
+    for col in ["content_stop", "content_lem", "content_min"]:
+        if col in df.columns:
+            return col
+    raise ValueError("Keine Content-Spalte gefunden (content_min/content_lem/content_stop)")
+
+
+def has_column(df: pd.DataFrame, col: str) -> bool:
+    """Prüft, ob eine Spalte existiert und nicht-leere Werte enthält."""
+    return col in df.columns and df[col].notna().any()
+
+
+# ---------------------------------------------------------
 # Speichern
 # ---------------------------------------------------------
 
@@ -57,7 +79,7 @@ def save_vocab(data: Dict, out_path: Path) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
-    print(f"> gespeichert: {out_path}")
+    print(f"  ✔ gespeichert: {out_path}")
 
 
 # ---------------------------------------------------------
@@ -85,6 +107,7 @@ INTERVALS = {
     "1865-1891": (1865, 1891)
 }
 
+
 # ---------------------------------------------------------
 # Vokabularerstellung für jede Variante
 # ---------------------------------------------------------
@@ -93,17 +116,21 @@ def build_vocabularies(df: pd.DataFrame, variant: str, output_dir: Path):
     """
     Erstellt Vokabulare für:
         - Gesamt
-        - Textklassen
-        - Zeitintervalle
-        - Genres
+        - Textklassen (falls Spalte vorhanden)
+        - Zeitintervalle (falls year/year_first vorhanden)
+        - Genres (falls genre-Spalte vorhanden)
     """
+    
+    # Content-Spalte identifizieren
+    content_col = identify_content_column(df)
+    print(f"  📋 Content-Spalte: {content_col}")
 
     # -----------------------------------------------------
     # 1) Gesamtvokabular
     # -----------------------------------------------------
-    print(f"\nErzeuge Gesamtvokabular ({variant}) …")
+    print(f"  🔄 Erzeuge Gesamtvokabular ({variant}) …")
 
-    freq = analyze_vocabulary(df["content"])
+    freq = analyze_vocabulary(df[content_col])
     vocab_data = {
         "variant": variant,
         "vocabulary_size": len(freq),
@@ -113,12 +140,12 @@ def build_vocabularies(df: pd.DataFrame, variant: str, output_dir: Path):
     save_vocab(vocab_data, output_dir / f"vocab_full_{variant}.json")
 
     # -----------------------------------------------------
-    # 2) Textklassen
+    # 2) Textklassen (falls vorhanden)
     # -----------------------------------------------------
-    print(f"Erzeuge Vokabulare für Textklassen ({variant}) …")
-    if "textclass" in df.columns:
+    if has_column(df, "textclass"):
+        print(f"  🔄 Erzeuge Vokabulare für Textklassen ({variant}) …")
         for tc in sorted(df["textclass"].dropna().unique()):
-            texts = df.loc[df["textclass"] == tc, "content"].astype(str).tolist()
+            texts = df.loc[df["textclass"] == tc, content_col].astype(str).tolist()
             if not texts:
                 continue
 
@@ -132,15 +159,26 @@ def build_vocabularies(df: pd.DataFrame, variant: str, output_dir: Path):
             }
             out = output_dir / "textclass" / f"vocab_textclass_{variant}_{tc}.json"
             save_vocab(vocab_data, out)
+    else:
+        print(f"  ⚠️  Keine 'textclass'-Spalte gefunden – Textklassen-Vokabulare übersprungen.")
 
     # -----------------------------------------------------
-    # 3) Zeitintervalle
+    # 3) Zeitintervalle (falls year/year_first vorhanden)
     # -----------------------------------------------------
-    print(f"Erzeuge Vokabulare für Zeitintervalle ({variant}) …")
-    if "year" in df.columns:
+    if has_column(df, "year") or has_column(df, "year_first"):
+        print(f"  🔄 Erzeuge Vokabulare für Zeitintervalle ({variant}) …")
+        
+        # year_first hat Vorrang, sonst year
+        if "year_first" in df.columns:
+            year_col = df["year_first"].combine_first(df.get("year", pd.Series()))
+        else:
+            year_col = df["year"]
+        
+        year_col = pd.to_numeric(year_col, errors="coerce")
+        
         for label, (start_y, end_y) in INTERVALS.items():
-            mask = df["year"].apply(lambda y: isinstance(y, (int, float)) and start_y <= y <= end_y)
-            texts = df.loc[mask, "content"].astype(str).tolist()
+            mask = year_col.apply(lambda y: isinstance(y, (int, float)) and start_y <= y <= end_y)
+            texts = df.loc[mask, content_col].astype(str).tolist()
             if not texts:
                 continue
 
@@ -155,19 +193,21 @@ def build_vocabularies(df: pd.DataFrame, variant: str, output_dir: Path):
             }
             out = output_dir / "intervals" / f"vocab_interval_{variant}_{label}.json"
             save_vocab(vocab_data, out)
+    else:
+        print(f"  ⚠️  Keine 'year' oder 'year_first'-Spalte gefunden – Intervall-Vokabulare übersprungen.")
 
     # -----------------------------------------------------
-    # 4) Genres
+    # 4) Genres (falls vorhanden)
     # -----------------------------------------------------
-    print(f"Erzeuge Vokabulare für Genres ({variant}) …")
-    if "genre" in df.columns:
+    if has_column(df, "genre"):
+        print(f"  🔄 Erzeuge Vokabulare für Genres ({variant}) …")
         for genre in PREDEFINED_GENRES:
             # prüfe, ob der Eintrag Teilstrings enthält (kommagetrennte Listen)
             mask = df["genre"].astype(str).str.contains(
                 rf"(^|, )?{re.escape(genre)}($|, )?",
                 regex=True, na=False
             )
-            texts = df.loc[mask, "content"].astype(str).tolist()
+            texts = df.loc[mask, content_col].astype(str).tolist()
             if not texts:
                 continue
 
@@ -181,6 +221,8 @@ def build_vocabularies(df: pd.DataFrame, variant: str, output_dir: Path):
             }
             out = output_dir / "genres" / f"vocab_genre_{variant}_{genre}.json"
             save_vocab(vocab_data, out)
+    else:
+        print(f"  ⚠️  Keine 'genre'-Spalte gefunden – Genre-Vokabulare übersprungen.")
 
 
 # ---------------------------------------------------------
@@ -223,19 +265,20 @@ def run(
     for variant in variants:
         infile = input_dir / f"korpus_{variant}.csv"
         if not infile.exists():
-            print(f"(!) Datei fehlt: {infile} — überspringe.")
+            print(f"⚠️  Datei fehlt: {infile} – überspringe.")
             continue
 
-        print(f"\nLese {infile} …")
+        print(f"\n{'='*70}")
+        print(f"VARIANTE: {variant.upper()}")
+        print(f"{'='*70}")
+        print(f"📄 Lese {infile} …")
         df = pd.read_csv(infile, sep=delimiter, encoding="utf-8")
-
-        # Es muss eine Spalte "content" geben
-        if "content" not in df.columns:
-            raise ValueError(f"Datei {infile} enthält keine Spalte 'content'.")
 
         build_vocabularies(df, variant, output_dir)
 
-    print("\nFertig. Alle Vokabulare erstellt.")
+    print("\n" + "="*70)
+    print("✅ Fertig. Alle Vokabulare erstellt.")
+    print("="*70)
 
 
 # ---------------------------------------------------------

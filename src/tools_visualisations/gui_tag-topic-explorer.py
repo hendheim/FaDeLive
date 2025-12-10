@@ -33,6 +33,223 @@ RESOURCES_DIR = PROJECT_ROOT / "resources"
 EXPLORATION_DIR = OUTPUT_DIR / "exploration"
 EXPLORATION_DIR.mkdir(parents=True, exist_ok=True)
 
+# -----------------------------
+# File Discovery System
+# -----------------------------
+class FileDiscovery:
+    """
+    Auto-Discovery für Projektdateien basierend auf Ordnerstruktur und Pattern-Matching.
+    
+    Unterstützt flexible Ordnerstrukturen:
+    - termsets/: Dateiende fix (z.B. "_2.3.csv"), Anfang variabel
+    - topic-models/: Dateiname fix, Unterordner variabel
+    - processed_termset/: Dateiende fix (z.B. "_2.3.csv"), Anfang variabel
+    """
+    
+    def __init__(self, base_dir: Path, termset_suffix: str = "_2.3.csv"):
+        self.base_dir = base_dir
+        self.termset_suffix = termset_suffix
+        self.found_files: Dict[str, Optional[Path]] = {}
+    
+    def scan_project(self) -> Dict[str, Optional[Path]]:
+        """Scannt Projekt und findet alle relevanten Dateien"""
+        self.found_files = {
+            # Termsets (Dateiende fix: *{suffix})
+            'termset': self._find_in_termsets(),
+            'topic_words': self._find_topic_words(),
+            'tfidf': self._find_tfidf(),
+            
+            # Processed termset (Dateiende fix: *{suffix})
+            'ranks': self._find_in_processed_termset('rank'),
+            'relevance': self._find_in_processed_termset('relevance'),
+            'counts_per_year': self._find_in_processed_termset('counts', 'year'),
+            'top10_year_value': self._find_in_processed_termset('top10', 'year', 'value'),
+            'top10_value_per_text': self._find_in_processed_termset('top10', 'value', 'text'),
+            
+            # Topic models (Dateiname fix)
+            'topics_dist': self._find_topics_dist(),
+            
+            # Statistics & processed topics
+            'tokens_year': self._find_tokens_year(),
+            'global_topdocs': self._find_global_topdocs(),
+            
+            # Metadata
+            'metadata': self._find_metadata(),
+        }
+        return self.found_files
+    
+    def _find_in_termsets(self) -> Optional[Path]:
+        """Findet Termset-Datei in resources/termsets/ (Ende: {suffix})"""
+        search_dir = self.base_dir / "resources" / "termsets"
+        if not search_dir.exists():
+            return None
+        
+        # Suche *{suffix} (z.B. *_2.3.csv)
+        for path in search_dir.glob(f"*{self.termset_suffix}"):
+            return path
+        return None
+    
+    def _find_topic_words(self) -> Optional[Path]:
+        """
+        Findet topic_words in topic-models/.
+        
+        Struktur: resources/topic-models/topics*/*words*tag*.csv
+        Beispiele: topics_100_words_tag.csv, topic_words_tag.csv
+        """
+        search_dir = self.base_dir / "resources" / "topic-models"
+        if not search_dir.exists():
+            return None
+        
+        # Suche in topics* Unterordnern
+        for topics_dir in search_dir.glob("topics*"):
+            if not topics_dir.is_dir():
+                continue
+            
+            # Suche *words*tag*.csv (flexibler Pattern)
+            # Matched: topics_100_words_tag.csv, topic_words_tag.csv, etc.
+            for path in topics_dir.glob("*words*tag*.csv"):
+                return path
+        
+        return None
+    
+    def _find_tfidf(self) -> Optional[Path]:
+        """Findet TF-IDF Datei in output/dtm_tfidf*/"""
+        search_dir = self.base_dir / "output"
+        if not search_dir.exists():
+            return None
+        
+        # Suche in dtm_tfidf* Ordnern
+        for tfidf_dir in search_dir.glob("dtm_tfidf*"):
+            if tfidf_dir.is_dir():
+                for path in tfidf_dir.glob("tfidf-*.csv"):
+                    return path
+        return None
+    
+    def _find_in_processed_termset(self, *keywords: str) -> Optional[Path]:
+        """
+        Findet Datei in processed_termset/ basierend auf Keywords.
+        
+        Struktur: output/processed_termset/Termset_{suffix}/Termset_{suffix}_keywords.csv
+        
+        Beispiele mit suffix="_2.3":
+          _find_in_processed_termset('rank') 
+            → sucht Termset_*_2.3/*rank*.csv
+          
+          _find_in_processed_termset('counts', 'year')
+            → sucht Termset_*_2.3/*counts*year*.csv
+        
+        WICHTIG: Das Suffix ist Teil des ORDNERNAMEN, nicht des Dateiende!
+        """
+        search_dir = self.base_dir / "output" / "processed_termset"
+        if not search_dir.exists():
+            return None
+        
+        # Suffix ohne führenden Unterstrich für Ordnersuche
+        # z.B. "_2.3.csv" → "2.3" oder "_2.3" → "2.3"
+        suffix_clean = self.termset_suffix.lstrip('_').replace('.csv', '')
+        
+        # Suche in Termset_*{suffix} Unterordnern
+        # Beispiel: Termset_Begriffe_2.3, Termset_Final_3.1
+        pattern_dir = f"Termset*{suffix_clean}"
+        
+        for termset_dir in search_dir.glob(pattern_dir):
+            if not termset_dir.is_dir():
+                continue
+            
+            # Pattern: *keyword1*keyword2*.csv (OHNE Suffix am Ende!)
+            pattern = "*" + "*".join(keywords) + "*.csv"
+            
+            for path in termset_dir.glob(pattern):
+                return path
+        
+        return None
+    
+    def _find_topics_dist(self) -> Optional[Path]:
+        """
+        Findet document-topics-distribution_tag.csv in topic-models/ (fester Name).
+        
+        Struktur: resources/topic-models/topics*/document-topics-distribution_tag.csv
+        """
+        search_dir = self.base_dir / "resources" / "topic-models"
+        if not search_dir.exists():
+            return None
+        
+        # Suche in topics* Unterordnern
+        for topics_dir in search_dir.glob("topics*"):
+            if not topics_dir.is_dir():
+                continue
+            
+            # Exakter Dateiname
+            target = topics_dir / "document-topics-distribution_tag.csv"
+            if target.exists():
+                return target
+        
+        return None
+    
+    def _find_tokens_year(self) -> Optional[Path]:
+        """Findet tokens-per-year in statistics/"""
+        search_dir = self.base_dir / "output" / "statistics"
+        if not search_dir.exists():
+            return None
+        
+        for path in search_dir.glob("*tokens*.csv"):
+            if 'year' in path.name.lower():
+                return path
+        return None
+    
+    def _find_global_topdocs(self) -> Optional[Path]:
+        """Findet global topdocs in processed_topics/"""
+        search_dir = self.base_dir / "output" / "processed_topics"
+        if not search_dir.exists():
+            return None
+        
+        for path in search_dir.glob("*topdocs*year*.csv"):
+            return path
+        return None
+    
+    def _find_metadata(self) -> Optional[Path]:
+        """Findet metadata.csv (Standard-Orte)"""
+        candidates = [
+            self.base_dir / "data" / "raw" / "metadata.csv",
+            self.base_dir / "data" / "metadata.csv",
+            self.base_dir / "metadata.csv",
+        ]
+        for path in candidates:
+            if path.exists():
+                return path
+        return None
+    
+    def get_status_report(self) -> str:
+        """Erstellt Status-Report für UI"""
+        report = []
+        report.append(f"📁 Arbeitsordner: {self.base_dir}\n")
+        report.append(f"🔖 Termset-Suffix: {self.termset_suffix}\n\n")
+        
+        categories = {
+            "Termsets": ['termset', 'topic_words', 'tfidf'],
+            "Processed Termset": ['ranks', 'relevance', 'counts_per_year', 'top10_year_value', 'top10_value_per_text'],
+            "Topic Models": ['topics_dist'],
+            "Statistics": ['tokens_year', 'global_topdocs'],
+            "Metadata": ['metadata'],
+        }
+        
+        for category, keys in categories.items():
+            report.append(f"{category}:\n")
+            for key in keys:
+                path = self.found_files.get(key)
+                if path:
+                    rel_path = path.relative_to(self.base_dir) if path else "?"
+                    report.append(f"  ✅ {key}: {rel_path}\n")
+                else:
+                    report.append(f"  ❌ {key}: nicht gefunden\n")
+            report.append("\n")
+        
+        return "".join(report)
+    
+    def get_missing_files(self) -> List[str]:
+        """Liste der fehlenden Dateien"""
+        return [key for key, path in self.found_files.items() if path is None]
+
 # Metadatenbereich
 METADATA_COLS: int = 24
 META_NAME_BLACKLIST = {
@@ -215,7 +432,7 @@ def _shrink_axes(ax):
 # -----------------------------
 class DataManager:
     def __init__(self) -> None:
-        # Termset↔Topic-Abbildungen
+        # Termset↔Topic-Abbildungen (Defaults)
         self.path_termset: Path = RESOURCES_DIR / "termsets" / "Termset_Begriffe_2.3.csv"
         self.path_topic_words: Path = RESOURCES_DIR / "topic-models" / "topics_v3" / "fadelive_mallet_stop_topic_words_100_words_tag.csv"
         self.path_tfidf: Path = OUTPUT_DIR / "dtm_tfidf_stop" / "tfidf-2000.csv"
@@ -242,6 +459,74 @@ class DataManager:
         self._df_global_topdocs_year: Optional[pd.DataFrame] = None
         self._df_topics_dist: Optional[pd.DataFrame] = None
         self._df_metadata: Optional[pd.DataFrame] = None
+        
+        # File Discovery
+        self.current_base_dir: Path = PROJECT_ROOT
+        self.current_termset_suffix: str = "_2.3.csv"
+
+    def auto_discover_files(self, base_dir: Path, termset_suffix: str) -> Dict[str, Optional[Path]]:
+        """
+        Automatisches Finden aller Dateien basierend auf Ordnerstruktur.
+        
+        Args:
+            base_dir: Basis-Projektordner
+            termset_suffix: Suffix für Termset-Dateien (z.B. "_2.3.csv")
+        
+        Returns:
+            Dictionary mit gefundenen Pfaden
+        """
+        self.current_base_dir = base_dir
+        self.current_termset_suffix = termset_suffix
+        
+        discovery = FileDiscovery(base_dir, termset_suffix)
+        found = discovery.scan_project()
+        
+        # Setze gefundene Pfade (invalidiert Caches)
+        if found.get('termset'):
+            self.set_termset(found['termset'])
+        if found.get('topic_words'):
+            self.set_topic_words(found['topic_words'])
+        if found.get('tfidf'):
+            self.set_tfidf(found['tfidf'])
+        if found.get('ranks'):
+            self.set_ranks(found['ranks'])
+        if found.get('relevance'):
+            self.set_relevance(found['relevance'])
+        if found.get('counts_per_year'):
+            self.set_counts_per_year(found['counts_per_year'])
+        if found.get('top10_year_value'):
+            self.set_top10_year_value(found['top10_year_value'])
+        if found.get('top10_value_per_text'):
+            self.set_top10_value_per_text_topic(found['top10_value_per_text'])
+        if found.get('tokens_year'):
+            self.set_tokens_year(found['tokens_year'])
+        if found.get('global_topdocs'):
+            self.set_global_topdocs_year(found['global_topdocs'])
+        if found.get('topics_dist'):
+            self.set_topics(found['topics_dist'])
+        if found.get('metadata'):
+            self.set_metadata(found['metadata'])
+        
+        return found
+    
+    def get_discovery_report(self) -> str:
+        """Status-Report für UI"""
+        discovery = FileDiscovery(self.current_base_dir, self.current_termset_suffix)
+        discovery.found_files = {
+            'termset': self.path_termset if self.path_termset.exists() else None,
+            'topic_words': self.path_topic_words if self.path_topic_words.exists() else None,
+            'tfidf': self.path_tfidf if self.path_tfidf.exists() else None,
+            'ranks': self.path_ranks if self.path_ranks.exists() else None,
+            'relevance': self.path_relevance if self.path_relevance.exists() else None,
+            'counts_per_year': self.path_counts_per_year if self.path_counts_per_year.exists() else None,
+            'top10_year_value': self.path_top10_year_value if self.path_top10_year_value.exists() else None,
+            'top10_value_per_text': self.path_top10_value_per_text_topic if self.path_top10_value_per_text_topic.exists() else None,
+            'topics_dist': self.path_topics if self.path_topics.exists() else None,
+            'tokens_year': self.path_tokens_year if self.path_tokens_year.exists() else None,
+            'global_topdocs': self.path_global_topdocs_year if self.path_global_topdocs_year.exists() else None,
+            'metadata': self.path_metadata if self.path_metadata.exists() else None,
+        }
+        return discovery.get_status_report()
 
     # Setter (Cache invalidieren)
     def set_termset(self, p: Path) -> None: self.path_termset = p; self._df_tags = None
@@ -501,12 +786,98 @@ def build_tab_tag_relevance(nb: ttk.Notebook, root: tk.Tk) -> None:
 
 
 def _ranked_topics_by_r(df_counts: pd.DataFrame, df_ranks: pd.DataFrame, topn: int) -> List[str]:
-    topics_in_df = df_counts.columns.astype(str)
+    """
+    Findet Top-N Topics aus df_ranks die in df_counts vorkommen.
+    Verwendet flexible Matching-Strategien für verschiedene Namensformate.
+    """
+    topics_in_df = set(df_counts.columns.astype(str))
+    
     r = (df_ranks.assign(Topic=df_ranks["Topic"].astype(str),
                          rank=pd.to_numeric(df_ranks["TFIDF-Positions-Rang"], errors="coerce"))
                   .dropna(subset=["rank"]).sort_values("rank"))
-    ranked = [t for t in r["Topic"].tolist() if t in topics_in_df][:topn]
+    
+    ranked = []
+    for topic in r["Topic"].tolist():
+        if len(ranked) >= topn:
+            break
+        
+        topic_str = str(topic).strip()
+        
+        # Strategie 1: Exakte Übereinstimmung
+        if topic_str in topics_in_df:
+            ranked.append(topic_str)
+            continue
+        
+        # Strategie 2: Mit "Topic " Präfix
+        topic_with_prefix = f"Topic {topic_str}"
+        if topic_with_prefix in topics_in_df:
+            ranked.append(topic_with_prefix)
+            continue
+        
+        # Strategie 3: Ohne "Topic " Präfix (falls topic_str="Topic 1")
+        if topic_str.startswith("Topic "):
+            topic_without_prefix = topic_str.replace("Topic ", "", 1)
+            if topic_without_prefix in topics_in_df:
+                ranked.append(topic_without_prefix)
+                continue
+        
+        # Strategie 4: Nur Nummer extrahieren und Varianten probieren
+        import re
+        match = re.search(r'\d+', topic_str)
+        if match:
+            num = match.group()
+            for variant in [f"Topic {num}", num, f"topic_{num}", f"topic{num}"]:
+                if variant in topics_in_df:
+                    ranked.append(variant)
+                    break
+    
+    # Fallback: Wenn keine Topics gefunden wurden, nehme Top-N nach Summe
+    if not ranked:
+        counts = df_counts.sum(axis=0).sort_values(ascending=False)
+        ranked = counts.head(topn).index.tolist()
+    
     return ranked
+
+
+def _normalize_id(id_str: str) -> str:
+    """
+    Normalisiert verschiedene ID-Formate zu einer Zahl.
+    
+    Beispiele:
+      "doc_001.txt" → "1"
+      "text_123" → "123"
+      "456" → "456"
+    """
+    import re
+    # Entferne Dateiendungen
+    id_str = re.sub(r'\.(txt|csv|pdf|xml|html)$', '', str(id_str), flags=re.IGNORECASE)
+    # Entferne Präfixe wie "doc_", "text_", etc.
+    id_str = re.sub(r'^(doc|text|document|file)[-_\s]*', '', id_str, flags=re.IGNORECASE)
+    # Entferne führende Nullen: "001" → "1"
+    id_str = id_str.lstrip('0') or '0'
+    # Extrahiere erste Zahl falls noch Text dabei
+    match = re.search(r'\d+', id_str)
+    return match.group() if match else id_str
+
+
+def _find_column(df: pd.DataFrame, possible_names: List[str]) -> Optional[str]:
+    """
+    Findet Spalte in DataFrame anhand möglicher Namen (case-insensitive).
+    
+    Args:
+        df: DataFrame
+        possible_names: Liste möglicher Spaltennamen
+    
+    Returns:
+        Gefundener Spaltenname oder None
+    """
+    df_cols_lower = {col.lower(): col for col in df.columns}
+    for name in possible_names:
+        name_lower = name.lower()
+        if name_lower in df_cols_lower:
+            return df_cols_lower[name_lower]
+    return None
+
 
 def build_tab_topics_year_stacked(nb: ttk.Notebook, root: tk.Tk) -> None:
     frame = ttk.Frame(nb); nb.add(frame, text="TT-Texts/Jahr (Stacked)")
@@ -831,6 +1202,30 @@ def build_tab_global_series(nb: ttk.Notebook, root: tk.Tk) -> None:
         except Exception as e:
             messagebox.showerror("Fehler", str(e), parent=root); return
 
+        # Auto-Detect Spaltennamen
+        jahr_col = _find_column(df, ["Jahr", "year", "Year", "YEAR", "jahre"])
+        if jahr_col is None:
+            messagebox.showerror(
+                "Fehler",
+                f"Keine Jahr-Spalte gefunden.\nVerfügbare Spalten: {', '.join(df.columns)}",
+                parent=root
+            )
+            return
+        
+        wert_col = _find_column(df, ["Wert", "value", "Value", "count", "Count", "anzahl"])
+        if wert_col is None:
+            # Nehme erste numerische Spalte außer Jahr
+            numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+            numeric_cols = [c for c in numeric_cols if c != jahr_col]
+            if numeric_cols:
+                wert_col = numeric_cols[0]
+            else:
+                messagebox.showerror("Fehler", "Keine Wert-Spalte gefunden.", parent=root)
+                return
+        
+        # Normalisiere Spaltennamen
+        df = df.rename(columns={jahr_col: "Jahr", wert_col: "Wert"})
+
         df = df.sort_values("Jahr")
         ymin, ymax = parse_year_range(int(df["Jahr"].min()), int(df["Jahr"].max()), ent_years.get())
         df = df[(df["Jahr"] >= ymin) & (df["Jahr"] <= ymax)]
@@ -885,12 +1280,41 @@ def build_tab_global_compare_tokens(nb: ttk.Notebook, root: tk.Tk) -> None:
         except Exception as e:
             messagebox.showerror("Fehler", str(e), parent=root); return
 
-        if "year" not in tokens_df.columns and "Jahr" in tokens_df.columns:
-            tokens_df = tokens_df.rename(columns={"Jahr":"year"})
-        if "anzahl_tokens" not in tokens_df.columns:
-            for c in ["tokens","count_tokens","anzahl"]:
-                if c in tokens_df.columns:
-                    tokens_df = tokens_df.rename(columns={c:"anzahl_tokens"}); break
+        # Auto-Detect Spaltennamen für tokens_df
+        jahr_col_tokens = _find_column(tokens_df, ["year", "Jahr", "Year", "YEAR"])
+        if jahr_col_tokens is None:
+            messagebox.showerror("Fehler", f"Keine Jahr-Spalte in Tokens-Datei gefunden.\nVerfügbare: {', '.join(tokens_df.columns)}", parent=root)
+            return
+        
+        tokens_col = _find_column(tokens_df, ["anzahl_tokens", "tokens", "count_tokens", "anzahl", "token_count"])
+        if tokens_col is None:
+            numeric_cols = tokens_df.select_dtypes(include=[np.number]).columns.tolist()
+            numeric_cols = [c for c in numeric_cols if c != jahr_col_tokens]
+            if numeric_cols:
+                tokens_col = numeric_cols[0]
+            else:
+                messagebox.showerror("Fehler", "Keine Token-Spalte gefunden.", parent=root)
+                return
+        
+        # Auto-Detect Spaltennamen für global_df
+        jahr_col_global = _find_column(global_df, ["Jahr", "year", "Year", "YEAR"])
+        if jahr_col_global is None:
+            messagebox.showerror("Fehler", f"Keine Jahr-Spalte in Global-Datei gefunden.\nVerfügbare: {', '.join(global_df.columns)}", parent=root)
+            return
+        
+        wert_col_global = _find_column(global_df, ["Wert", "value", "Value", "count"])
+        if wert_col_global is None:
+            numeric_cols = global_df.select_dtypes(include=[np.number]).columns.tolist()
+            numeric_cols = [c for c in numeric_cols if c != jahr_col_global]
+            if numeric_cols:
+                wert_col_global = numeric_cols[0]
+            else:
+                messagebox.showerror("Fehler", "Keine Wert-Spalte in Global-Datei gefunden.", parent=root)
+                return
+        
+        # Normalisiere Spaltennamen
+        tokens_df = tokens_df.rename(columns={jahr_col_tokens: "year", tokens_col: "anzahl_tokens"})
+        global_df = global_df.rename(columns={jahr_col_global: "Jahr", wert_col_global: "Wert"})
 
         tokens_df = tokens_df.sort_values("year")
         global_df = global_df.sort_values("Jahr")
@@ -970,11 +1394,37 @@ def build_tab_topic_trends_from_distribution(nb: ttk.Notebook, root: tk.Tk) -> N
         mapping_df['_id'] = mapping_df['_id'].astype(str)
         mapping_df['Jahr_final'] = pd.to_numeric(mapping_df['Jahr_final'], errors="coerce")
 
-        idx = df_topics.index.astype(str)
-        jahr_mapping = dict(zip(mapping_df['_id'], mapping_df['Jahr_final']))
+        # Flexible ID-Normalisierung für besseres Matching
         df = df_topics.copy()
-        df['Jahr'] = idx.map(jahr_mapping)
+        idx_original = df.index.astype(str)
+        idx_normalized = idx_original.map(_normalize_id)
+        mapping_ids_normalized = mapping_df['_id'].map(_normalize_id)
+        
+        jahr_mapping = dict(zip(mapping_ids_normalized, mapping_df['Jahr_final']))
+        df['Jahr'] = idx_normalized.map(jahr_mapping)
+        
+        # Warnung bei vielen fehlgeschlagenen Matches
+        missing_count = df['Jahr'].isna().sum()
+        total_count = len(df)
+        if missing_count > 0:
+            missing_ratio = missing_count / total_count
+            if missing_ratio > 0.5:
+                messagebox.showwarning(
+                    "ID-Matching Warnung",
+                    f"{missing_ratio*100:.1f}% der Dokument-IDs konnten nicht mit Metadaten gemapped werden.\n"
+                    f"({missing_count} von {total_count} Dokumenten)\n\n"
+                    "Mögliche Ursachen:\n"
+                    "- Verschiedene ID-Formate in den Dateien\n"
+                    "- Dateien stammen aus unterschiedlichen Quellen\n\n"
+                    "Das Plotting wird mit den verfügbaren Daten fortgesetzt.",
+                    parent=root
+                )
+        
         df = df.dropna(subset=['Jahr'])
+        if df.empty:
+            messagebox.showerror("Fehler", "Keine Dokumente nach ID-Matching übrig. Dateien passen nicht zusammen.", parent=root)
+            return
+        
         df['Jahr'] = df['Jahr'].astype(int)
         df = df[df['Jahr'] >= 1840]
 
@@ -1039,6 +1489,141 @@ def build_tab_topic_trends_from_distribution(nb: ttk.Notebook, root: tk.Tk) -> N
             _shrink_axes(ax); _apply_layout(fig); plt.show()
 
     ttk.Button(frame, text="Berechnen", command=compute).grid(row=row+1, column=0, padx=6, pady=8, sticky="w")
+
+# =============================
+# Workspace Management Tab
+# =============================
+def build_tab_workspace(root_nb: ttk.Notebook, root: tk.Tk) -> None:
+    """Tab für Arbeitsordner-Verwaltung mit Auto-Discovery"""
+    frame = ttk.Frame(root_nb)
+    root_nb.add(frame, text="📁 Arbeitsordner")
+    
+    row = 0
+    
+    # Header
+    header = ttk.Label(frame, text="Arbeitsordner-Verwaltung", font=("TkDefaultFont", 12, "bold"))
+    header.grid(row=row, column=0, columnspan=3, sticky="w", padx=6, pady=(6, 10))
+    
+    row += 1
+    
+    # Aktueller Arbeitsordner
+    ttk.Label(frame, text="Aktueller Arbeitsordner:").grid(row=row, column=0, sticky="w", padx=6, pady=4)
+    workspace_var = tk.StringVar(value=str(DATA.current_base_dir))
+    ent_workspace = _mk_entry(frame, width=70, textvariable=workspace_var)
+    ent_workspace.grid(row=row, column=1, sticky="we", padx=6, pady=4)
+    frame.columnconfigure(1, weight=1)
+    
+    def browse_workspace():
+        path = filedialog.askdirectory(
+            parent=root,
+            title="Arbeitsordner wählen",
+            initialdir=str(DATA.current_base_dir)
+        )
+        if path:
+            workspace_var.set(path)
+    
+    ttk.Button(frame, text="📁 Wählen...", command=browse_workspace).grid(row=row, column=2, sticky="w", padx=4, pady=4)
+    
+    row += 1
+    
+    # Termset-Suffix
+    ttk.Label(frame, text="Termset-Suffix (Dateiende):").grid(row=row, column=0, sticky="w", padx=6, pady=4)
+    suffix_var = tk.StringVar(value=DATA.current_termset_suffix)
+    ent_suffix = _mk_entry(frame, width=20, textvariable=suffix_var)
+    ent_suffix.grid(row=row, column=1, sticky="w", padx=6, pady=4)
+    
+    ttk.Label(frame, text="z.B. _2.3.csv oder _v3.1.csv", foreground="gray").grid(row=row, column=2, sticky="w", padx=4, pady=4)
+    
+    row += 1
+    
+    # Info-Text
+    info_frame = ttk.LabelFrame(frame, text="ℹ️ Info", padding=8)
+    info_frame.grid(row=row, column=0, columnspan=3, sticky="ew", padx=6, pady=8)
+    
+    info_label = ttk.Label(
+        info_frame,
+        text="Das Tool sucht automatisch nach Dateien basierend auf:\n"
+             "• termsets/: Dateien mit dem angegebenen Suffix\n"
+             "• topic-models/: Feste Dateinamen (z.B. document-topics-distribution_tag.csv)\n"
+             "• processed_termset/: Dateien mit dem angegebenen Suffix",
+        justify="left"
+    )
+    info_label.pack(anchor="w")
+    
+    row += 1
+    
+    # Status-Report (Textfeld)
+    ttk.Label(frame, text="Gefundene Dateien:").grid(row=row, column=0, sticky="nw", padx=6, pady=4)
+    
+    status_text = tk.Text(frame, height=20, width=100, wrap="word", font=("Courier", 9))
+    status_text.grid(row=row, column=1, columnspan=2, sticky="nsew", padx=6, pady=4)
+    frame.rowconfigure(row, weight=1)
+    
+    status_scroll = ttk.Scrollbar(frame, orient="vertical", command=status_text.yview)
+    status_text.configure(yscrollcommand=status_scroll.set)
+    status_scroll.grid(row=row, column=3, sticky="ns")
+    
+    row += 1
+    
+    # Buttons
+    def scan_files():
+        """Scannt Dateien und zeigt Status"""
+        status_text.delete(1.0, tk.END)
+        status_text.insert(tk.END, "🔄 Scanne Dateien...\n\n")
+        root.update_idletasks()
+        
+        try:
+            base_dir = Path(workspace_var.get())
+            suffix = suffix_var.get().strip()
+            
+            if not base_dir.exists():
+                messagebox.showerror("Fehler", f"Ordner existiert nicht:\n{base_dir}", parent=root)
+                return
+            
+            # Auto-Discovery
+            found = DATA.auto_discover_files(base_dir, suffix)
+            
+            # Status-Report
+            status_text.delete(1.0, tk.END)
+            report = DATA.get_discovery_report()
+            status_text.insert(tk.END, report)
+            
+            # Warnungen bei fehlenden Dateien
+            discovery = FileDiscovery(base_dir, suffix)
+            discovery.found_files = found
+            missing = discovery.get_missing_files()
+            
+            if missing:
+                status_text.insert(tk.END, f"\n⚠️ Warnung: {len(missing)} Datei(en) nicht gefunden:\n")
+                for key in missing:
+                    status_text.insert(tk.END, f"  • {key}\n")
+                status_text.insert(tk.END, "\nDas Tool funktioniert trotzdem mit den verfügbaren Dateien.\n")
+            else:
+                status_text.insert(tk.END, "\n✅ Alle Dateien gefunden!\n")
+            
+            messagebox.showinfo(
+                "Scan abgeschlossen",
+                f"Arbeitsordner: {base_dir.name}\n"
+                f"Gefunden: {len(found) - len(missing)}/{len(found)} Dateien\n\n"
+                f"Die Pfade wurden aktualisiert.",
+                parent=root
+            )
+            
+        except Exception as e:
+            messagebox.showerror("Fehler", f"Scan fehlgeschlagen:\n{e}", parent=root)
+            status_text.insert(tk.END, f"\n❌ Fehler: {e}\n")
+    
+    def show_current_status():
+        """Zeigt aktuellen Status ohne neuen Scan"""
+        status_text.delete(1.0, tk.END)
+        report = DATA.get_discovery_report()
+        status_text.insert(tk.END, report)
+    
+    ttk.Button(frame, text="🔄 Dateien scannen", command=scan_files).grid(row=row, column=0, sticky="w", padx=6, pady=8)
+    ttk.Button(frame, text="📊 Aktuellen Status anzeigen", command=show_current_status).grid(row=row, column=1, sticky="w", padx=6, pady=8)
+    
+    # Initial-Status anzeigen
+    show_current_status()
 
 # -----------------------------
 # Daten-Tab (Pfade setzen/prüfen)
@@ -1117,6 +1702,9 @@ def main() -> None:
 
     nb_root = ttk.Notebook(root)
     nb_root.pack(fill="both", expand=True)
+
+    # Arbeitsordner-Verwaltung (NEU!)
+    build_tab_workspace(nb_root, root)
 
     # Daten
     build_tab_data(nb_root, root)

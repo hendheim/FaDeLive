@@ -26,6 +26,10 @@ import networkx as nx
 from adjustText import adjust_text
 from matplotlib.text import Text
 from matplotlib.lines import Line2D
+import plotly.express as px
+import plotly.graph_objects as go
+import plotly.express as px
+from plotly.subplots import make_subplots
 
 # Optional: Wortwolke
 try:
@@ -62,7 +66,7 @@ RESOURCES_DIR = PROJECT_ROOT / "resources"
 MODEL_DIR = OUTPUT_DIR / "word2vec_models"
 TERMSET_DIR = RESOURCES_DIR / "termsets"
 
-DEFAULT_MODEL_PATH = MODEL_DIR / "korpus_gen.model"
+DEFAULT_MODEL_PATH = MODEL_DIR / "korpus_gen.wordvectors"
 DEFAULT_TERMLIST_PATH = TERMSET_DIR / "Termset_Begriffe_2.3.csv"
 
 EXPLORATION_DIR = OUTPUT_DIR / "exploration"
@@ -202,22 +206,40 @@ def coalesce_years(df: pd.DataFrame, col_year_first="year_first", col_year="year
     return df
 
 def load_w2v_or_kv(path: Path) -> KeyedVectors:
+    """
+    Lädt Word2Vec-Modell oder KeyedVectors flexibel.
+    Priorität: .wordvectors > .kv > .model > word2vec-format
+    """
     if not path.exists():
         raise FileNotFoundError(f"Modell nicht gefunden: {path}")
-    try:
-        m = Word2Vec.load(str(path)); kv = m.wv; setattr(kv, "_loaded_path", str(path)); return kv
-    except Exception:
-        pass
-    try:
-        kv = KeyedVectors.load(str(path)); setattr(kv, "_loaded_path", str(path)); return kv
-    except Exception:
-        pass
+    
+    # 1. KeyedVectors direkt (.wordvectors, .kv)
+    if path.suffix in {'.wordvectors', '.kv'}:
+        try:
+            kv = KeyedVectors.load(str(path))
+            setattr(kv, "_loaded_path", str(path))
+            return kv
+        except Exception as e:
+            raise RuntimeError(f"KeyedVectors laden fehlgeschlagen: {e}") from e
+    
+    # 2. Vollständiges Word2Vec-Modell (.model)
+    if path.suffix == '.model':
+        try:
+            m = Word2Vec.load(str(path))
+            kv = m.wv
+            setattr(kv, "_loaded_path", str(path))
+            return kv
+        except Exception as e:
+            raise RuntimeError(f"Word2Vec-Modell laden fehlgeschlagen: {e}") from e
+    
+    # 3. Word2Vec-Format (.bin, .txt, .gz)
     try:
         binary = path.suffix.lower() in {".bin", ".gz"}
         kv = KeyedVectors.load_word2vec_format(str(path), binary=binary)
-        setattr(kv, "_loaded_path", str(path)); return kv
+        setattr(kv, "_loaded_path", str(path))
+        return kv
     except Exception as exc:
-        raise RuntimeError("Modell konnte nicht geladen werden.") from exc
+        raise RuntimeError(f"Kein unterstütztes Format: {path.suffix}") from exc
 
 CURRENT_MODEL_PATH: Path = DEFAULT_MODEL_PATH
 CURRENT_TERMLIST_PATH: Path = DEFAULT_TERMLIST_PATH
@@ -239,7 +261,7 @@ def choose_model(root: tk.Tk, label_widget: Optional[tk.Label | ttk.Label] = Non
     path_str = filedialog.askopenfilename(
         parent=root, title="Word2Vec-/KeyedVectors-Modell wählen",
         initialdir=str(MODEL_DIR),
-        filetypes=[("Gensim Model", "*.model"), ("KeyedVectors", "*.kv"),
+        filetypes=[("KeyedVectors", "*.wordvectors *.kv"), ("Gensim Model", "*.model"),
                    ("Word2Vec Bin/Txt", "*.bin *.txt *.gz"), ("Alle Dateien", "*.*")]
     )
     if not path_str: return
@@ -278,6 +300,7 @@ class DataManager:
         self.path_topics: Path = RESOURCES_DIR / "topic-models" / "topics_v3" / "document-topics-distribution_tag.csv"
         self.path_metadata: Path = PROJECT_ROOT / "data" / "raw" / "metadata.csv"
         self.path_tfidf_for_cloud: Path = PROJECT_ROOT / "output" / "dtm_tfidf_stop" / "tfidf-2000.csv"
+        self.path_cosine: Path = PROJECT_ROOT / "output" / "cosine" / "cosine_tfidf2000.csv"
 
         self.corpus_df: Optional[pd.DataFrame] = None
         self.dtm_df: Optional[pd.DataFrame] = None
@@ -285,6 +308,7 @@ class DataManager:
         self.topics_df: Optional[pd.DataFrame] = None
         self.metadata_df: Optional[pd.DataFrame] = None
         self.tfidf_avg_df: Optional[pd.DataFrame] = None
+        self.cosine_df: Optional[pd.DataFrame] = None
 
     @staticmethod
     def _detect_col(df: pd.DataFrame, candidates: Iterable[str]) -> Optional[str]:
@@ -310,14 +334,14 @@ class DataManager:
         if self.corpus_df is not None: return self.corpus_df
         if not self.path_corpus.exists(): raise FileNotFoundError(f"Korpus fehlt: {self.path_corpus}")
         df = pd.read_csv(self.path_corpus, sep=";")
-        col_text = self._detect_col(df, ["text", "clean_text", "content"])
+        col_text = self._detect_col(df, ["text", "clean_text", "content", "content_lem", "content_stop", "content_min"])
         if col_text is None: raise ValueError("Keine Textspalte (text/clean_text/content) gefunden.")
         col_id = self._detect_col(df, ["_id", "id", "doc_id", "filename"])
         col_year_first = self._detect_col(df, ["year_first"])
         col_year = self._detect_col(df, ["year", "jahr"])
         col_author = self._detect_col(df, ["author_surname", "author"])
         col_title = self._detect_col(df, ["title"])
-        col_source = self._detect_col(df, ["source", "journal", "magazine"])
+        col_source = self._detect_col(df, ["source", "journal", "magazine"])    
         ren = {col_text: "text"}
         if col_id: ren[col_id] = "doc_id"
         if col_year_first: ren[col_year_first] = "year_first"
@@ -397,6 +421,18 @@ class DataManager:
         avg.columns = ["term", "tfidf_avg"]
         self.tfidf_avg_df = avg
         return avg
+    
+    def load_cosine(self) -> pd.DataFrame:
+        """
+        Lädt Kosinus-Matrix und cached sie
+        """
+        if self.cosine_df is not None:
+            return self.cosine_df
+        if not self.path_cosine.exists():
+            raise FileNotFoundError(f"Kosinus-Matrix fehlt: {self.path_cosine}")
+        df = pd.read_csv(self.path_cosine, index_col=0)
+        self.cosine_df = df
+        return df
 
 DATA = DataManager()
 
@@ -733,9 +769,9 @@ def build_tab_concordance(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
     ttk.Label(frame, text="Kontext (± Zeichen):").grid(row=row, column=0, sticky="w", padx=6, pady=4)
     ent_ctx = _mk_entry(frame, width=8); ent_ctx.insert(0,"50"); ent_ctx.grid(row=row, column=1, sticky="w", padx=6, pady=4)
     row+=1
-    case_var = tk.BooleanVar(value=False); regex_var = tk.BooleanVar(value=True)
+    case_var = tk.BooleanVar(value=False); whole_word_var = tk.BooleanVar(value=True)
     ttk.Checkbutton(frame, text="Groß-/Klein beachten", variable=case_var).grid(row=row, column=0, sticky="w", padx=6, pady=2)
-    ttk.Checkbutton(frame, text="Regex verwenden", variable=regex_var).grid(row=row, column=1, sticky="w", padx=6, pady=2)
+    ttk.Checkbutton(frame, text="Nur ganze Wörter", variable=whole_word_var).grid(row=row, column=1, sticky="w", padx=6, pady=2)
     row+=1
     ttk.Label(frame, text="Max. Treffer:").grid(row=row, column=0, sticky="w", padx=6, pady=4)
     ent_max = _mk_entry(frame, width=8); ent_max.insert(0,"1000"); ent_max.grid(row=row, column=1, sticky="w", padx=6, pady=4)
@@ -765,7 +801,12 @@ def build_tab_concordance(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
         except Exception:
             messagebox.showerror("Fehler","Kontext/Max. Treffer ungültig.",parent=root); return
         flags = 0 if case_var.get() else re.IGNORECASE
-        pattern = re.compile(query if regex_var.get() else re.escape(query), flags)
+        # Wenn "Nur ganze Wörter" aktiviert: füge \b hinzu
+        if whole_word_var.get():
+            query_pattern = r"\b" + re.escape(query) + r"\b"
+        else:
+            query_pattern = re.escape(query)
+        pattern = re.compile(query_pattern, flags)
         tree.delete(*tree.get_children()); results=[]; count=0
         for _, r in df.iterrows():
             text=str(r["text"]); doc_id=r.get("doc_id",""); year=r.get("year_final", r.get("year",""))
@@ -1432,6 +1473,11 @@ def build_tab_network(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
     row+=1
     ttk.Label(frame, text="Ähnlichkeits-Schwelle (0–1):").grid(row=row, column=0, sticky="w", padx=6, pady=4)
     ent_thr=_mk_entry(frame, width=8); ent_thr.insert(0,"0.3"); ent_thr.grid(row=row, column=1, sticky="w", padx=6, pady=4)
+    
+    row+=1
+    ttk.Label(frame, text="Auflösung:").grid(row=row, column=0, sticky="w", padx=6, pady=4)
+    resolution_var = tk.StringVar(value="Klein")
+    ttk.Combobox(frame, textvariable=resolution_var, values=["Groß", "Mittel", "Klein"], width=12, state="readonly").grid(row=row, column=1, sticky="w", padx=6, pady=4)
 
     row+=1
     last_ctx={"ctx":""}
@@ -1454,20 +1500,42 @@ def build_tab_network(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
         G, sims = build_graph(kv, keywords, topn, thr)
         if not G or G.number_of_edges()==0:
             messagebox.showinfo("Keine Verbindungen","Keine Kanten über Schwelle.", parent=root); return
+        
+        # Auflösung (Klein/Mittel/Groß)
+        resolution = resolution_var.get()
+        if resolution == "Klein":
+            figsize = (14, 12)
+            node_size = 320
+            font_size = 14
+        elif resolution == "Mittel":
+            figsize = (18, 16)
+            node_size = 480
+            font_size = 16
+        else:  # Groß
+            figsize = (24, 20)
+            node_size = 640
+            font_size = 18
+        
         pos = nx.spring_layout(G, seed=42, k=0.5)
         edge_weights = [d["weight"] for (_, _, d) in G.edges(data=True)]
         w_min, w_max = min(edge_weights), max(edge_weights)
         norm_weights = [1.0]*len(edge_weights) if w_max==w_min else [(w-w_min)/(w_max-w_min) for w in edge_weights]
-        plt.figure(figsize=(14,12))
-        nx.draw_networkx_nodes(G, pos, node_size=320, node_color="sandybrown", alpha=0.4)
-        nx.draw_networkx_labels(G, pos, font_size=14)
-        nx.draw_networkx_edges(G, pos, width=[max(0.5, w*4) for w in edge_weights], edge_color=plt.cm.Oranges(norm_weights), alpha=0.85)
+        
+        # Erstelle Figure mit korrekter Größe
+        fig = plt.figure(figsize=figsize)
+        ax = fig.add_subplot(111)
+        
+        nx.draw_networkx_nodes(G, pos, node_size=node_size, node_color="sandybrown", alpha=0.4, ax=ax)
+        nx.draw_networkx_labels(G, pos, font_size=font_size, ax=ax)
+        nx.draw_networkx_edges(G, pos, width=[max(0.5, w*4) for w in edge_weights], edge_color=plt.cm.Oranges(norm_weights), alpha=0.85, ax=ax)
+        
         model_path = getattr(kv, "_loaded_path", str(CURRENT_MODEL_PATH))
         model_name = os.path.splitext(os.path.basename(model_path))[0].replace("_gen","").replace("_"," ")
         wrapped_keywords = ", ".join(keywords[:5]) + (" …" if len(keywords) > 5 else "")
-        plt.title(f"Word2Vec-Ähnlichkeitsnetzwerk: {wrapped_keywords} | Top-N: {topn} | Schwelle: {thr:.2f} | Modell: {model_name}")
-        plt.axis("off"); plt.tight_layout()
-        last_ctx["ctx"]=f"{'_'.join(keywords)}_{topn}_{str(thr).replace('.','_')}"
+        ax.set_title(f"Word2Vec-Ähnlichkeitsnetzwerk: {wrapped_keywords} | Top-N: {topn} | Schwelle: {thr:.2f} | Modell: {model_name}")
+        ax.axis("off")
+        plt.tight_layout()
+        last_ctx["ctx"]=f"{'_'.join(keywords)}_{topn}_{str(thr).replace('.','_')}_{resolution}"
         btn_save_png.configure(state="normal")
         plt.show()
 
@@ -1530,29 +1598,40 @@ def on_pick(event):
     artist.set_fontsize(11 if is_bold else 13)
     artist.figure.canvas.draw_idle()
 
-def plot_embedding_umap(xy: np.ndarray, texts: List[str], clusters: np.ndarray,
+def plot_embedding_umap(xy: np.ndarray, texts: Optional[List[str]], clusters: np.ndarray,
                         tag_labels: List[str], markers: List[str], k: int,
                         clickable: bool, use_markers: bool,
-                        save_path: Optional[Path] = None, save_dpi: int = 450) -> None:
+                        save_path: Optional[Path] = None, save_dpi: int = 450, figsize: tuple = (15, 10)) -> None:
     colors = make_cluster_colors(k)
-    fig, ax = plt.subplots(figsize=(15, 10))
+    fig, ax = plt.subplots(figsize=figsize)
     size = 80 if use_markers else 30
     for i, (x, y) in enumerate(xy):
         ax.scatter(x, y, c=colors[int(clusters[i])], marker=markers[i], edgecolors="k", s=size, alpha=0.85)
+    
+    # Nur Labels anzeigen wenn texts nicht None
     texts_obj=[]
-    for (x,y),txt in zip(xy, texts):
-        t=ax.text(x,y,txt,fontsize=10,ha="center",va="center",picker=clickable); texts_obj.append(t)
-    adjust_text(texts_obj, ax=ax)
-    if clickable: fig.canvas.mpl_connect("pick_event", on_pick)
+    if texts is not None:
+        for (x,y),txt in zip(xy, texts):
+            t=ax.text(x,y,txt,fontsize=10,ha="center",va="center",picker=clickable); texts_obj.append(t)
+        adjust_text(texts_obj, ax=ax)
+        if clickable: fig.canvas.mpl_connect("pick_event", on_pick)
+    
     ax.set_title(f"UMAP + agglomeratives Clustering (k={k})")
+    
+    # Cluster-Legende (IMMER anzeigen)
     cluster_ids = sorted(set(int(c) for c in clusters))
-    handles=[Line2D([0],[0], marker="o", linestyle="", color=colors[c], label=f"Cluster {c}", markersize=10, markeredgecolor="k") for c in cluster_ids]
-    leg1=ax.legend(handles=handles, title="Cluster (Farben)", loc="upper left", bbox_to_anchor=(1.01,1)); ax.add_artist(leg1)
+    cluster_handles=[Line2D([0],[0], marker="o", linestyle="", color=colors[c], label=f"Cluster {c}", markersize=10, markeredgecolor="k") for c in cluster_ids]
+    leg_cluster=ax.legend(handles=cluster_handles, title="Cluster (Farben)", loc="upper left", bbox_to_anchor=(1.01,1))
+    
+    # Marker-Legende (NUR wenn use_markers aktiv)
     if use_markers:
+        # Füge Cluster-Legende als Artist hinzu (damit sie nicht überschrieben wird)
+        ax.add_artist(leg_cluster)
         combo_pairs = sorted({(tl, m) for tl, m in zip(tag_labels, markers)})
         marker_handles=[Line2D([0],[0], marker=m, linestyle="None", color="k", markersize=10, markeredgecolor="k") for _,m in combo_pairs]
         marker_labels=[tl for tl,_ in combo_pairs]
         ax.legend(handles=marker_handles, labels=marker_labels, title="Tag-Kombinationen (Marker)", loc="lower left", bbox_to_anchor=(1.01,0))
+    
     plt.tight_layout()
     if save_path is not None:
         save_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1572,10 +1651,27 @@ def build_tab_termset_cluster(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
     row+=1
     ttk.Label(frame, text="Clusteranzahl (k):").grid(row=row, column=0, sticky="w", padx=6, pady=4)
     ent_k = _mk_entry(frame, width=8); ent_k.insert(0,"3"); ent_k.grid(row=row, column=1, sticky="w", padx=6, pady=4)
+    
+    row+=1
+    ttk.Label(frame, text="UMAP-Parameter:").grid(row=row, column=0, sticky="w", padx=6, pady=4)
+    row+=1
+    ttk.Label(frame, text="  n_neighbors:").grid(row=row, column=0, sticky="w", padx=6, pady=2)
+    ent_neighbors = _mk_entry(frame, width=8); ent_neighbors.insert(0, "15"); ent_neighbors.grid(row=row, column=1, sticky="w", padx=6, pady=2)
+    row+=1
+    ttk.Label(frame, text="  min_dist:").grid(row=row, column=0, sticky="w", padx=6, pady=2)
+    ent_mindist = _mk_entry(frame, width=8); ent_mindist.insert(0, "0.05"); ent_mindist.grid(row=row, column=1, sticky="w", padx=6, pady=2)
+    
+    row+=1
+    ttk.Label(frame, text="Auflösung:").grid(row=row, column=0, sticky="w", padx=6, pady=4)
+    resolution_var = tk.StringVar(value="Klein")
+    ttk.Combobox(frame, textvariable=resolution_var, values=["Klein", "Mittel", "Groß"], width=12, state="readonly").grid(row=row, column=1, sticky="w", padx=6, pady=4)
     row+=1
     clickable_var = tk.BooleanVar(value=True); use_markers_var = tk.BooleanVar(value=True)
-    ttk.Checkbutton(frame, text="Labels klickbar", variable=clickable_var).grid(row=row, column=0, sticky="w", padx=6, pady=4)
-    ttk.Checkbutton(frame, text="Tag-Kombinationen als Marker", variable=use_markers_var).grid(row=row, column=1, sticky="w", padx=6, pady=4)
+    show_labels_var = tk.BooleanVar(value=True)
+    ttk.Checkbutton(frame, text="Ausdrücke anzeigen", variable=show_labels_var).grid(row=row, column=0, sticky="w", padx=6, pady=4)
+    ttk.Checkbutton(frame, text="Labels klickbar", variable=clickable_var).grid(row=row, column=1, sticky="w", padx=6, pady=4)
+    row+=1
+    ttk.Checkbutton(frame, text="Tag-Kombinationen als Marker", variable=use_markers_var).grid(row=row, column=0, sticky="w", padx=6, pady=4)
     row+=1
     save_scatter_var = tk.BooleanVar(value=True)
     ttk.Checkbutton(frame, text=f"Scatterplot automatisch speichern → {SCATTER_OUTPUT_DIR}", variable=save_scatter_var).grid(row=row, column=0, columnspan=3, sticky="w", padx=6, pady=4)
@@ -1599,8 +1695,29 @@ def build_tab_termset_cluster(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
             vecs, texts, words = vectors_for_words(kv, wort_tag_map, original_map)
         except Exception as e:
             messagebox.showerror("Fehler", str(e), parent=root); return
+        
+        # UMAP-Parameter auslesen
+        try:
+            n_neighbors = int(ent_neighbors.get().strip())
+            min_dist = float(ent_mindist.get().strip())
+        except Exception:
+            messagebox.showerror("Fehler", "Ungültige UMAP-Parameter", parent=root); return
+        
+        # Auflösung (Klein/Mittel/Groß) → figsize
+        resolution = resolution_var.get()
+        if resolution == "Klein":
+            figsize = (12, 8)
+            save_dpi = 450
+        elif resolution == "Mittel":
+            figsize = (16, 12)
+            save_dpi = 600
+        else:  # Groß
+            figsize = (20, 16)
+            save_dpi = 750
+        
         n_points = vecs.shape[0]; k_eff = min(max(1, k), n_points)
-        reducer = umap.UMAP(n_neighbors=min(15, max(2, n_points - 1)), min_dist=0.05, metric="cosine", random_state=42)
+        n_neighbors = min(n_neighbors, max(2, n_points - 1))
+        reducer = umap.UMAP(n_neighbors=n_neighbors, min_dist=min_dist, metric="cosine", random_state=42)
         xy = reducer.fit_transform(vecs)
         labels = np.zeros(n_points, dtype=int) if k_eff==1 else AgglomerativeClustering(n_clusters=k_eff, linkage="ward").fit_predict(vecs)
         tag_labels, markers = build_markers(words, wort_tag_map, tags, use_markers_var.get())
@@ -1611,8 +1728,8 @@ def build_tab_termset_cluster(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
         save_path = None
         termset_name = Path(CURRENT_TERMLIST_PATH).stem
         if save_scatter_var.get():
-            filename = f"{termset_name}_k{k_eff}.png"; save_path = SCATTER_OUTPUT_DIR / filename
-        plot_embedding_umap(xy, texts, labels, tag_labels, markers, k_eff, clickable_var.get(), use_markers_var.get(), save_path=save_path, save_dpi=450)
+            filename = f"{termset_name}_k{k_eff}_{resolution}.png"; save_path = SCATTER_OUTPUT_DIR / filename
+        plot_embedding_umap(xy, texts if show_labels_var.get() else None, labels, tag_labels, markers, k_eff, clickable_var.get(), use_markers_var.get(), save_path=save_path, save_dpi=save_dpi, figsize=figsize)
 
     ttk.Button(frame, text="UMAP-Cluster berechnen", command=run).grid(row=row+1, column=0, padx=6, pady=8, sticky="w")
 
@@ -1630,6 +1747,10 @@ def build_tab_termset_wordcloud(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
     row+=1
     ttk.Label(frame, text="Farbschema (matplotlib cmap):").grid(row=row, column=0, sticky="w", padx=6, pady=4)
     cmap_var=tk.StringVar(value="tab10"); _mk_entry(frame, textvariable=cmap_var, width=16).grid(row=row, column=1, sticky="w", padx=6, pady=4)
+    
+    row+=1
+    whole_word_var = tk.BooleanVar(value=True)
+    ttk.Checkbutton(frame, text="☑ Nur ganze Wörter (\\b Grenzen)", variable=whole_word_var).grid(row=row, column=0, columnspan=2, sticky="w", padx=6, pady=4)
 
     row+=1
     btn_save_png = ttk.Button(frame, text="Cloud (PNG) speichern", state="disabled")
@@ -1658,7 +1779,12 @@ def build_tab_termset_wordcloud(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
         for tag in df_words.columns:
             for word in df_words[tag].dropna():
                 word=str(word).strip().lower()
-                val = tfidf_avg.loc[tfidf_avg["word"]==word, "tfidf_avg"]
+                # Bei "Nur ganze Wörter": exakte Übereinstimmung, sonst Teilstring
+                if whole_word_var.get():
+                    val = tfidf_avg.loc[tfidf_avg["word"]==word, "tfidf_avg"]
+                else:
+                    # Teilstring-Suche: alle Wörter die den Suchstring enthalten
+                    val = tfidf_avg.loc[tfidf_avg["word"].str.contains(word, case=False, na=False, regex=False), "tfidf_avg"]
                 if not val.empty:
                     word_infos.append({"word":word, "tag":tag, "tfidf":float(val.values[0])})
         if not word_infos:
@@ -1752,6 +1878,592 @@ def build_tab_termset_dendro(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
         info.delete(1.0, tk.END); info.insert(tk.END, "\n".join(msg_lines))
 
     ttk.Button(frame, text="Dendrogramme erzeugen", command=run).grid(row=row+1, column=0, padx=6, pady=8, sticky="w")
+
+# =========================
+# Text-Cluster
+# =========================
+
+def build_tab_texts_scatter(parent_nb: ttk.Notebook, root: tk.Tk) -> None:
+    """
+    Tab für UMAP-Scatterplot mit optionalem hierarchischem Clustering.
+    Arbeitet mit Kosinus-Distanzmatrizen aus der Pipeline.
+    """
+    frame = ttk.Frame(parent_nb)
+    parent_nb.add(frame, text="Streudiagramm")
+    
+    row = 0
+    
+    # =========================================================================
+    # INFO
+    # =========================================================================
+    
+    info_frame = ttk.LabelFrame(frame, text="ℹ️ Datenquellen", padding=8)
+    info_frame.grid(row=row, column=0, columnspan=3, sticky="ew", padx=6, pady=6)
+    
+    ttk.Label(
+        info_frame,
+        text="💡 Tipp: Dateien können im Tab 'Daten' zentral verwaltet werden.",
+        foreground="blue"
+    ).pack(anchor="w")
+    
+    row += 1
+    
+    # =========================================================================
+    # DATEIAUSWAHL
+    # =========================================================================
+    
+    default_cosine = DATA.path_cosine if hasattr(DATA, 'path_cosine') else PROJECT_ROOT / "output" / "cosine" / "cosine_tfidf2000.csv"
+    default_corpus = DATA.path_metadata
+    
+    ttk.Label(frame, text="Kosinus-Matrix:").grid(row=row, column=0, sticky="w", padx=6, pady=4)
+    cosine_var = tk.StringVar(value=str(default_cosine))
+    ent_cosine = _mk_entry(frame, width=70, textvariable=cosine_var)
+    ent_cosine.grid(row=row, column=1, sticky="we", padx=6, pady=4)
+    frame.columnconfigure(1, weight=1)
+    
+    def browse_cosine():
+        p = filedialog.askopenfilename(
+            parent=root,
+            title="Kosinus-Matrix wählen",
+            initialdir=str(default_cosine.parent),
+            filetypes=[("CSV", "*.csv"), ("Alle Dateien", "*.*")]
+        )
+        if p:
+            cosine_var.set(p)
+    
+    ttk.Button(frame, text="…", width=3, command=browse_cosine).grid(row=row, column=2, sticky="w", padx=4)
+    
+    row += 1
+    ttk.Label(frame, text="Korpus-Metadaten:").grid(row=row, column=0, sticky="w", padx=6, pady=4)
+    corpus_var = tk.StringVar(value=str(default_corpus))
+    ent_corpus = _mk_entry(frame, width=70, textvariable=corpus_var)
+    ent_corpus.grid(row=row, column=1, sticky="we", padx=6, pady=4)
+    
+    def browse_corpus():
+        p = filedialog.askopenfilename(
+            parent=root,
+            title="Korpus-Metadaten wählen",
+            initialdir=str(default_corpus.parent),
+            filetypes=[("CSV", "*.csv"), ("Alle Dateien", "*.*")]
+        )
+        if p:
+            corpus_var.set(p)
+    
+    ttk.Button(frame, text="…", width=3, command=browse_corpus).grid(row=row, column=2, sticky="w", padx=4)
+    
+    row += 1
+    
+    def load_from_data_tab():
+        corpus_var.set(str(DATA.path_metadata))
+        if hasattr(DATA, 'path_cosine'):
+            cosine_var.set(str(DATA.path_cosine))
+        messagebox.showinfo(
+            "Übernommen",
+            f"Pfade aus Daten-Tab übernommen:\n\n"
+            f"Korpus: {DATA.path_metadata.name}\n" +
+            (f"Kosinus: {DATA.path_cosine.name}" if hasattr(DATA, 'path_cosine') else ""),
+            parent=root
+        )
+    
+    ttk.Button(
+        frame,
+        text="📥 Pfade aus Daten-Tab übernehmen",
+        command=load_from_data_tab
+    ).grid(row=row, column=0, columnspan=2, padx=6, pady=4, sticky="w")
+    
+    row += 1
+    ttk.Separator(frame, orient="horizontal").grid(row=row, column=0, columnspan=3, sticky="ew", padx=6, pady=8)
+    
+    # =========================================================================
+    # CLUSTERING
+    # =========================================================================
+    
+    row += 1
+    clustering_var = tk.BooleanVar(value=False)
+    ttk.Checkbutton(
+        frame, text="☑ Hierarchisches Clustering aktivieren",
+        variable=clustering_var
+    ).grid(row=row, column=0, columnspan=2, sticky="w", padx=6, pady=4)
+    
+    row += 1
+    ttk.Label(frame, text="  Clusteranzahl (k):").grid(row=row, column=0, sticky="w", padx=6, pady=4)
+    ent_k = _mk_entry(frame, width=8)
+    ent_k.insert(0, "5")
+    ent_k.grid(row=row, column=1, sticky="w", padx=6, pady=4)
+    
+    row += 1
+    ttk.Label(frame, text="  Linkage-Methode:").grid(row=row, column=0, sticky="w", padx=6, pady=4)
+    linkage_var = tk.StringVar(value="ward")
+    ttk.Combobox(
+        frame,
+        textvariable=linkage_var,
+        values=["ward", "average", "complete", "single"],
+        width=12,
+        state="readonly"
+    ).grid(row=row, column=1, sticky="w", padx=6, pady=4)
+    
+    row += 1
+    ttk.Separator(frame, orient="horizontal").grid(row=row, column=0, columnspan=3, sticky="ew", padx=6, pady=8)
+    
+    # =========================================================================
+    # UMAP
+    # =========================================================================
+    
+    row += 1
+    umap_frame = ttk.LabelFrame(frame, text="UMAP-Parameter", padding=8)
+    umap_frame.grid(row=row, column=0, columnspan=3, sticky="ew", padx=6, pady=4)
+    
+    umap_row = 0
+    ttk.Label(umap_frame, text="n_neighbors (5-50):").grid(row=umap_row, column=0, sticky="w", padx=6, pady=4)
+    ent_neighbors = _mk_entry(umap_frame, width=8)
+    ent_neighbors.insert(0, "15")
+    ent_neighbors.grid(row=umap_row, column=1, sticky="w", padx=6, pady=4)
+    
+    umap_row += 1
+    ttk.Label(umap_frame, text="min_dist (0.0-0.99):").grid(row=umap_row, column=0, sticky="w", padx=6, pady=4)
+    ent_dist = _mk_entry(umap_frame, width=8)
+    ent_dist.insert(0, "0.1")
+    ent_dist.grid(row=umap_row, column=1, sticky="w", padx=6, pady=4)
+    
+    umap_row += 1
+    ttk.Label(
+        umap_frame,
+        text="ℹ️ Metrik: Cosine (via precomputed Distanzmatrix)",
+        foreground="gray"
+    ).grid(row=umap_row, column=0, columnspan=2, sticky="w", padx=6, pady=2)
+    
+    row += 1
+    ttk.Separator(frame, orient="horizontal").grid(row=row, column=0, columnspan=3, sticky="ew", padx=6, pady=8)
+    
+    # =========================================================================
+    # VISUALISIERUNG
+    # =========================================================================
+    
+    row += 1
+    ttk.Label(frame, text="Visualisierung:").grid(row=row, column=0, sticky="w", padx=6, pady=4)
+    
+    row += 1
+    ttk.Label(frame, text="  Färbung nach:").grid(row=row, column=0, sticky="w", padx=6, pady=4)
+    color_mode_var = tk.StringVar(value="auto")
+    ttk.Combobox(
+        frame,
+        textvariable=color_mode_var,
+        values=["auto", "cluster", "textclass", "year", "author_surname"],
+        width=15,
+        state="readonly"
+    ).grid(row=row, column=1, sticky="w", padx=6, pady=4)
+    
+    row += 1
+    ttk.Label(frame, text="  Marker-Größe:").grid(row=row, column=0, sticky="w", padx=6, pady=4)
+    ent_size = _mk_entry(frame, width=8)
+    ent_size.insert(0, "8")
+    ent_size.grid(row=row, column=1, sticky="w", padx=6, pady=4)
+    
+    row += 1
+    ttk.Label(frame, text="  Transparenz (0.0-1.0):").grid(row=row, column=0, sticky="w", padx=6, pady=4)
+    ent_opacity = _mk_entry(frame, width=8)
+    ent_opacity.insert(0, "0.7")
+    ent_opacity.grid(row=row, column=1, sticky="w", padx=6, pady=4)
+    
+    row += 1
+    ttk.Separator(frame, orient="horizontal").grid(row=row, column=0, columnspan=3, sticky="ew", padx=6, pady=8)
+    
+    # =========================================================================
+    # INFO-BOX
+    # =========================================================================
+    
+    row += 1
+    ttk.Label(frame, text="Info:").grid(row=row, column=0, sticky="nw", padx=6, pady=4)
+    info_text = tk.Text(frame, height=10, width=90, wrap="word")
+    info_text.grid(row=row, column=1, columnspan=2, sticky="nsew", padx=6, pady=4)
+    frame.rowconfigure(row, weight=1)
+    
+    info_scroll = ttk.Scrollbar(frame, orient="vertical", command=info_text.yview)
+    info_text.configure(yscrollcommand=info_scroll.set)
+    info_scroll.grid(row=row, column=3, sticky="ns")
+    
+    # =========================================================================
+    # BUTTONS & STATE
+    # =========================================================================
+    
+    row += 1
+    
+    state = {
+        'last_fig': None,
+        'last_df': None,
+        'last_context': ""
+    }
+    
+    btn_compute = ttk.Button(frame, text="🔄 Berechnen")
+    btn_compute.grid(row=row, column=0, padx=6, pady=8, sticky="w")
+    
+    # KEIN PNG-Button (kaleido benötigt)
+    btn_save_html = ttk.Button(frame, text="🌐 HTML speichern", state="disabled")
+    btn_save_html.grid(row=row, column=1, padx=6, pady=8, sticky="w")
+    
+    btn_save_csv = ttk.Button(frame, text="📄 CSV speichern", state="disabled")
+    btn_save_csv.grid(row=row, column=2, padx=6, pady=8, sticky="w")
+    
+    # =========================================================================
+    # COMPUTE
+    # =========================================================================
+    
+    def compute():
+        info_text.delete(1.0, tk.END)
+        info_text.insert(tk.END, "🔄 Lade Daten...\n")
+        info_text.insert(tk.END, "📏 Metrik: Cosine (precomputed)\n\n")
+        root.update_idletasks()
+        
+        # 1. KOSINUS-MATRIX
+        try:
+            cosine_path = Path(cosine_var.get())
+            if not cosine_path.exists():
+                raise FileNotFoundError(f"Nicht gefunden: {cosine_path}")
+            
+            info_text.insert(tk.END, f"📄 Lade Matrix: {cosine_path.name}\n")
+            
+            if hasattr(DATA, 'cosine_df') and DATA.cosine_df is not None and str(DATA.path_cosine) == str(cosine_path):
+                info_text.insert(tk.END, "♻️ Nutze Cache\n")
+                cos_df = DATA.cosine_df.copy()
+            else:
+                cos_df = pd.read_csv(cosine_path, index_col=0)
+            
+            cosine_matrix = cos_df.values
+            doc_ids = cos_df.index.tolist()
+            
+            info_text.insert(tk.END, f"✔ Matrix: {cosine_matrix.shape[0]:,} × {cosine_matrix.shape[1]:,}\n")
+            
+        except Exception as e:
+            messagebox.showerror("Fehler", f"Kosinus-Matrix:\n{e}", parent=root)
+            info_text.insert(tk.END, f"❌ {e}\n")
+            return
+        
+        # 2. METADATEN
+        try:
+            path_metadata = Path(corpus_var.get())
+            if not path_metadata.exists():
+                raise FileNotFoundError(f"Nicht gefunden: {path_metadata}")
+            
+            info_text.insert(tk.END, f"📄 Lade Metadaten: {path_metadata.name}\n")
+            
+            if DATA.corpus_df is not None and str(DATA.path_metadata) == str(path_metadata):
+                info_text.insert(tk.END, "♻️ Nutze Cache\n")
+                metadata_df = DATA.corpus_df.copy()
+            else:
+                metadata_df = pd.read_csv(path_metadata, sep=";")
+            
+            ensure_doc_id_inplace(metadata_df)
+            
+            doc_ids_str = [str(d) for d in doc_ids]
+            metadata_df["doc_id"] = metadata_df["doc_id"].astype(str)
+            metadata_df = metadata_df[metadata_df["doc_id"].isin(doc_ids_str)]
+            metadata_df = metadata_df.set_index("doc_id").reindex(doc_ids_str).reset_index()
+            
+            info_text.insert(tk.END, f"✔ Metadaten: {len(metadata_df):,} Docs\n")
+            
+            if len(cosine_matrix) != len(metadata_df):
+                raise ValueError(f"Mismatch: Matrix={len(cosine_matrix)}, Meta={len(metadata_df)}")
+            
+        except Exception as e:
+            messagebox.showerror("Fehler", f"Metadaten:\n{e}", parent=root)
+            info_text.insert(tk.END, f"❌ {e}\n")
+            return
+        
+        # 3. PARAMETER
+        try:
+            n_neighbors = max(2, min(50, int(ent_neighbors.get().strip())))
+            n_neighbors = min(n_neighbors, len(metadata_df) - 1)
+            min_dist = max(0.0, min(0.99, float(ent_dist.get().strip())))
+            marker_size = max(1, min(50, int(ent_size.get().strip())))
+            opacity = max(0.0, min(1.0, float(ent_opacity.get().strip())))
+        except Exception as e:
+            messagebox.showerror("Fehler", f"Parameter:\n{e}", parent=root)
+            return
+        
+        # 4. DISTANZ
+        info_text.insert(tk.END, "\n🔄 Distanzmatrix...\n")
+        root.update_idletasks()
+        
+        distance_matrix = 1 - cosine_matrix
+        distance_matrix = np.clip(distance_matrix, 0, None)
+        distance_matrix = (distance_matrix + distance_matrix.T) / 2
+        np.fill_diagonal(distance_matrix, 0)
+        
+        info_text.insert(tk.END, "✔ Distanz berechnet\n")
+        
+        # 5. UMAP
+        info_text.insert(tk.END, f"\n🔄 UMAP (n={n_neighbors}, d={min_dist})...\n")
+        root.update_idletasks()
+        
+        try:
+            import time
+            start = time.time()
+            
+            reducer = umap.UMAP(
+                n_components=2,
+                n_neighbors=n_neighbors,
+                min_dist=min_dist,
+                metric='precomputed',
+                random_state=42
+            )
+            
+            umap_results = reducer.fit_transform(distance_matrix)
+            elapsed = time.time() - start
+            
+            info_text.insert(tk.END, f"✔ UMAP fertig ({elapsed:.1f}s)\n")
+            
+        except Exception as e:
+            messagebox.showerror("Fehler", f"UMAP:\n{e}", parent=root)
+            info_text.insert(tk.END, f"❌ UMAP: {e}\n")
+            return
+        
+        # 6. CLUSTERING (optional)
+        clusters = None
+        k_eff = 0
+        
+        if clustering_var.get():
+            try:
+                k = int(ent_k.get().strip())
+                k_eff = max(1, min(k, len(metadata_df)))
+                linkage_method = linkage_var.get()
+                
+                info_text.insert(tk.END, f"\n🔄 Clustering (k={k_eff}, {linkage_method})...\n")
+                root.update_idletasks()
+                
+                if k_eff == 1:
+                    clusters = np.zeros(len(metadata_df), dtype=int)
+                else:
+                    if linkage_method == 'ward':
+                        from sklearn.manifold import MDS
+                        n_comp = min(50, len(distance_matrix) - 1)
+                        mds = MDS(n_components=n_comp, dissimilarity='precomputed', random_state=42)
+                        X_embedded = mds.fit_transform(distance_matrix)
+                        agglo = AgglomerativeClustering(n_clusters=k_eff, linkage=linkage_method)
+                        clusters = agglo.fit_predict(X_embedded)
+                    else:
+                        from scipy.spatial.distance import squareform
+                        from scipy.cluster.hierarchy import linkage as scipy_linkage, fcluster
+                        condensed_dist = squareform(distance_matrix, checks=False)
+                        Z = scipy_linkage(condensed_dist, method=linkage_method)
+                        clusters = fcluster(Z, k_eff, criterion='maxclust') - 1
+                
+                unique, counts = np.unique(clusters, return_counts=True)
+                info_text.insert(tk.END, f"✔ Clustering fertig\n\n📊 Verteilung:\n")
+                for cid, cnt in zip(unique, counts):
+                    info_text.insert(tk.END, f"   Cluster {cid}: {cnt:,} ({cnt/len(clusters)*100:.1f}%)\n")
+                
+            except Exception as e:
+                messagebox.showerror("Fehler", f"Clustering:\n{e}", parent=root)
+                info_text.insert(tk.END, f"❌ Clustering: {e}\n")
+                return
+        
+        # 7. DATAFRAME
+        umap_df = pd.DataFrame(umap_results, columns=["UMAP-1", "UMAP-2"])
+        umap_df = umap_df.join(metadata_df.reset_index(drop=True))
+        
+        if clusters is not None:
+            umap_df["cluster"] = clusters
+            umap_df["cluster_label"] = "Cluster " + umap_df["cluster"].astype(str)
+        
+        # Hover-Text (wie im Beispiel)
+        umap_df["hover_text"] = (
+            umap_df["doc_id"].astype(str) + "<br>" +
+            "Author: " + umap_df.get("author_surname", pd.Series("N/A")).fillna("N/A").astype(str) + "<br>" +
+            "Title: " + umap_df.get("title", pd.Series("N/A")).fillna("N/A").astype(str)
+        )
+        
+        # 8. LEGEND LABEL & FÄRBUNG (wie im Beispiel)
+        color_mode = color_mode_var.get()
+        color_column = None
+        color_discrete_map = None
+        
+        if color_mode == "auto":
+            if clusters is not None:
+                color_column = "cluster_label"
+            elif "textclass" in umap_df.columns and umap_df["textclass"].notna().any():
+                color_column = "textclass"
+                # Legend-Label: Textclass + ID
+                umap_df["legend_label"] = umap_df["textclass"].fillna("Unbekannt") + " - " + umap_df["doc_id"].astype(str)
+                
+                # Farbschema wie im Beispiel
+                unique_textclasses = umap_df["textclass"].dropna().unique()
+                color_map_tc = {
+                    cls: px.colors.qualitative.Plotly[i % len(px.colors.qualitative.Plotly)]
+                    for i, cls in enumerate(unique_textclasses)
+                }
+                color_discrete_map = {
+                    lbl: color_map_tc.get(cls, "#CCCCCC")
+                    for lbl, cls in zip(umap_df["legend_label"], umap_df["textclass"])
+                }
+                color_column = "legend_label"
+            elif "year_final" in umap_df.columns or "year" in umap_df.columns:
+                year_col = "year_final" if "year_final" in umap_df.columns else "year"
+                umap_df[year_col] = pd.to_numeric(umap_df[year_col], errors='coerce')
+                color_column = year_col
+        elif color_mode == "cluster":
+            if clusters is not None:
+                color_column = "cluster_label"
+            else:
+                messagebox.showwarning("Hinweis", "Clustering nicht aktiv", parent=root)
+        elif color_mode == "textclass":
+            if "textclass" in umap_df.columns and umap_df["textclass"].notna().any():
+                umap_df["legend_label"] = umap_df["textclass"].fillna("Unbekannt") + " - " + umap_df["doc_id"].astype(str)
+                unique_textclasses = umap_df["textclass"].dropna().unique()
+                color_map_tc = {
+                    cls: px.colors.qualitative.Plotly[i % len(px.colors.qualitative.Plotly)]
+                    for i, cls in enumerate(unique_textclasses)
+                }
+                color_discrete_map = {
+                    lbl: color_map_tc.get(cls, "#CCCCCC")
+                    for lbl, cls in zip(umap_df["legend_label"], umap_df["textclass"])
+                }
+                color_column = "legend_label"
+        elif color_mode == "year":
+            year_col = "year_final" if "year_final" in umap_df.columns else "year"
+            if year_col in umap_df.columns:
+                umap_df[year_col] = pd.to_numeric(umap_df[year_col], errors='coerce')
+                color_column = year_col
+        elif color_mode == "author_surname":
+            if "author_surname" in umap_df.columns:
+                color_column = "author_surname"
+        
+        # 9. PLOT (wie im Beispiel)
+        info_text.insert(tk.END, "\n🎨 Erstelle Plot...\n")
+        root.update_idletasks()
+        
+        try:
+            fig = px.scatter(
+                umap_df,
+                x="UMAP-1",
+                y="UMAP-2",
+                color=color_column if color_column else "doc_id",
+                hover_name="hover_text",
+                opacity=opacity,
+                color_discrete_map=color_discrete_map,
+                labels={color_column: "Textklasse & ID"} if color_column == "legend_label" else {}
+            )
+            
+            title_parts = [f"UMAP ({len(umap_df):,} Docs)"]
+            if clusters is not None:
+                title_parts.append(f"k={k_eff}, {linkage_method}")
+            title_parts.append(f"n_neighbors={n_neighbors}, min_dist={min_dist}")
+            
+            fig.update_layout(
+                title=" | ".join(title_parts),
+                width=1200,
+                height=800,
+                hovermode='closest',
+                legend=dict(
+                    yanchor="top",
+                    y=0.99,
+                    xanchor="left",
+                    x=1.02,
+                    bgcolor="rgba(255,255,255,0.5)",
+                    itemsizing='constant',
+                    title_font=dict(size=14),
+                    font=dict(size=10),
+                    itemwidth=30,
+                    orientation="v",
+                    traceorder="normal"
+                )
+            )
+            
+            # Marker wie im Beispiel
+            fig.update_traces(marker=dict(size=marker_size, line=dict(width=0.5, color='white')))
+            
+            state['last_fig'] = fig
+            state['last_df'] = umap_df
+            state['last_context'] = f"scatter_{'cluster' if clusters is not None else 'plain'}_{len(umap_df)}"
+            
+            info_text.insert(tk.END, "✔ Plot erstellt\n")
+            info_text.insert(tk.END, "\n💡 Öffne Browser...\n")
+            
+            btn_save_html.configure(state="normal")
+            btn_save_csv.configure(state="normal")
+            
+            fig.show()
+            
+            info_text.insert(tk.END, "✔ Browser geöffnet!\n")
+            
+        except Exception as e:
+            messagebox.showerror("Fehler", f"Plot:\n{e}", parent=root)
+            info_text.insert(tk.END, f"❌ Plot: {e}\n")
+            import traceback
+            info_text.insert(tk.END, f"\n{traceback.format_exc()}\n")
+    
+    # =========================================================================
+    # SAVE FUNCTIONS
+    # =========================================================================
+    
+    def save_html():
+        if state['last_fig'] is None:
+            messagebox.showwarning("Hinweis", "Bitte erst berechnen", parent=root)
+            return
+        
+        try:
+            initdir = EXPLORATION_DIR / "Streudiagramm"
+            initdir.mkdir(parents=True, exist_ok=True)
+            
+            path = filedialog.asksaveasfilename(
+                parent=root,
+                title="HTML speichern",
+                initialdir=str(initdir),
+                initialfile=f"{state['last_context']}_interactive.html",
+                defaultextension=".html",
+                filetypes=[("HTML", "*.html"), ("Alle", "*.*")]
+            )
+            
+            if not path:
+                return
+            
+            state['last_fig'].write_html(path)
+            messagebox.showinfo("Gespeichert", f"HTML:\n{path}", parent=root)
+            info_text.insert(tk.END, f"\n💾 HTML: {Path(path).name}\n")
+            
+        except Exception as e:
+            messagebox.showerror("Fehler", f"HTML:\n{e}", parent=root)
+    
+    def save_csv():
+        if state['last_df'] is None:
+            messagebox.showwarning("Hinweis", "Bitte erst berechnen", parent=root)
+            return
+        
+        try:
+            initdir = EXPLORATION_DIR / "Streudiagramm"
+            initdir.mkdir(parents=True, exist_ok=True)
+            
+            cols_to_save = ["doc_id", "UMAP-1", "UMAP-2"]
+            if "cluster" in state['last_df'].columns:
+                cols_to_save.append("cluster")
+            for col in ["author_surname", "title", "year_final", "year", "textclass", "source"]:
+                if col in state['last_df'].columns:
+                    cols_to_save.append(col)
+            
+            df_export = state['last_df'][cols_to_save].copy()
+            
+            path = filedialog.asksaveasfilename(
+                parent=root,
+                title="CSV speichern",
+                initialdir=str(initdir),
+                initialfile=f"{state['last_context']}_data.csv",
+                defaultextension=".csv",
+                filetypes=[("CSV", "*.csv"), ("Alle", "*.*")]
+            )
+            
+            if not path:
+                return
+            
+            df_export.to_csv(path, index=False)
+            messagebox.showinfo("Gespeichert", f"CSV:\n{path}\n\nSpalten: {', '.join(cols_to_save)}", parent=root)
+            info_text.insert(tk.END, f"\n💾 CSV: {Path(path).name} ({len(df_export):,} Zeilen)\n")
+            
+        except Exception as e:
+            messagebox.showerror("Fehler", f"CSV:\n{e}", parent=root)
+    
+    # === COMMANDS ===
+    btn_compute.configure(command=compute)
+    btn_save_html.configure(command=save_html)
+    btn_save_csv.configure(command=save_csv)
 
 # =========================
 # Topics – Verläufe (ab 1840) + Optionen
@@ -1951,18 +2663,37 @@ def build_tab_data(root_nb: ttk.Notebook, root: tk.Tk) -> None:
         ttk.Button(frame, text="…", width=3, command=browse).grid(row=row, column=2, sticky="w", padx=4)
         row+=1
 
-    # CSV-Quellen
+    # =========================================================================
+    # NEU: Kosinus-Matrix-Pfad im DataManager
+    # =========================================================================
+    
+    # Füge Attribut zum DataManager hinzu (falls noch nicht vorhanden)
+    if not hasattr(DATA, 'path_cosine'):
+        DATA.path_cosine = PROJECT_ROOT / "output" / "cosine" / "cosine_tfidf2000.csv"
+        DATA.cosine_df = None  # Cache für geladene Matrix
+
+    # =========================================================================
+    # CSV-QUELLEN
+    # =========================================================================
+    
     row_pick_csv("Korpus:", lambda p:setattr(DATA, "path_corpus", p) or setattr(DATA, "corpus_df", None), DATA.path_corpus)
     row_pick_csv("Document-Term-Matrix:", 
                  lambda p:(setattr(DATA, "path_dtm", p),
                            setattr(DATA, "dtm_df", None),
                            setattr(DATA, "tokens_per_year_df", None)),
                  DATA.path_dtm)
+    
+    # NEU: Kosinus-Matrix
+    row_pick_csv("Kosinus-Matrix:", 
+                 lambda p:(setattr(DATA, "path_cosine", p),
+                           setattr(DATA, "cosine_df", None)),
+                 DATA.path_cosine)
+    
     row_pick_csv("Document-Topic-Matrix:", lambda p:setattr(DATA, "path_topics", p) or setattr(DATA, "topics_df", None), DATA.path_topics)
     row_pick_csv("Metadata:", lambda p:setattr(DATA, "path_metadata", p) or setattr(DATA, "metadata_df", None), DATA.path_metadata)
     row_pick_csv("TF-IDF:", lambda p:setattr(DATA, "path_tfidf_for_cloud", p) or setattr(DATA, "tfidf_avg_df", None), DATA.path_tfidf_for_cloud)
 
-    # Neu: globales Modell & Termliste
+    # Modell & Termliste
     row_pick_model("Wort-Vektor-Modell:", CURRENT_MODEL_PATH)
     row_pick_termlist("Termset:", CURRENT_TERMLIST_PATH)
 
@@ -1970,6 +2701,10 @@ def build_tab_data(root_nb: ttk.Notebook, root: tk.Tk) -> None:
     info = tk.Text(frame, height=12, width=100); info.grid(row=row, column=0, columnspan=3, sticky="nsew", padx=6, pady=6)
     frame.rowconfigure(row, weight=1)
 
+    # =========================================================================
+    # LOAD & CHECK FUNKTION (erweitert)
+    # =========================================================================
+    
     def load_check():
         info.delete(1.0, tk.END); msgs=[]
 
@@ -1996,6 +2731,27 @@ def build_tab_data(root_nb: ttk.Notebook, root: tk.Tk) -> None:
         except Exception as e:
             msgs.append(f"❌ Document-Term-Matrix: {e}")
 
+        # NEU: Kosinus-Matrix
+        try:
+            DATA.cosine_df = None
+            if not DATA.path_cosine.exists():
+                raise FileNotFoundError(f"Datei nicht gefunden: {DATA.path_cosine}")
+            
+            cos_df = pd.read_csv(DATA.path_cosine, index_col=0)
+            DATA.cosine_df = cos_df  # Cache
+            
+            n_docs = cos_df.shape[0]
+            doc_ids_sample = list(cos_df.index[:3]) + (["..."] if n_docs > 3 else [])
+            
+            # Statistik: Durchschnittliche Ähnlichkeit
+            values = cos_df.values
+            np.fill_diagonal(values, np.nan)  # Diagonale ausschließen
+            avg_sim = float(np.nanmean(values))
+            
+            msgs.append(f"✅ Kosinus-Matrix: {n_docs:,} × {n_docs:,} Dokumente | ⌀ Ähnlichkeit: {avg_sim:.3f} | IDs: {', '.join(str(x) for x in doc_ids_sample)}")
+        except Exception as e:
+            msgs.append(f"❌ Kosinus-Matrix: {e}")
+
         # Topics
         try:
             DATA.topics_df=None; dft=DATA.load_topics(); msgs.append(f"✅ Topics: {dft.shape[0]:,} Docs × {dft.shape[1]:,} Topics")
@@ -2014,7 +2770,7 @@ def build_tab_data(root_nb: ttk.Notebook, root: tk.Tk) -> None:
         except Exception as e:
             msgs.append(f"❌ TF-IDF avg: {e}")
 
-        # W2V/Embeddings – jetzt in „Daten“ laden
+        # W2V/Embeddings
         try:
             global W2V_GLOBAL
             W2V_GLOBAL = load_w2v_or_kv(CURRENT_MODEL_PATH)
@@ -2041,7 +2797,7 @@ def build_tab_data(root_nb: ttk.Notebook, root: tk.Tk) -> None:
 
 def main() -> None:
     root = tk.Tk()
-    root.title(f"{SUITE_NAME} – Ausdrücke · Wort-Vektor-Modell · Termset · Topics")
+    root.title(f"{SUITE_NAME} – Ausdrücke · Wort-Vektor-Modell · Termset · Topics · Texte")
     install_safe_exit(root)
     bring_front(root)
     install_focus_minimize(root, enable=True)
@@ -2055,8 +2811,9 @@ def main() -> None:
     # Oberreiter:
     nb_expr = ttk.Notebook(root_nb); root_nb.add(nb_expr, text="Ausdrücke")
     nb_w2v  = ttk.Notebook(root_nb); root_nb.add(nb_w2v,  text="Wort-Vektor-Modell")
-    nb_term = ttk.Notebook(root_nb); root_nb.add(nb_term,  text="Termset")
-    nb_top  = ttk.Notebook(root_nb); root_nb.add(nb_top,   text="Topics")
+    nb_term = ttk.Notebook(root_nb); root_nb.add(nb_term, text="Termset")
+    nb_top  = ttk.Notebook(root_nb); root_nb.add(nb_top,  text="Topics")
+    nb_texts = ttk.Notebook(root_nb); root_nb.add(nb_texts, text="Texte")
 
     # Ausdrücke – Untertabs
     build_tab_vocab(nb_expr, root)
@@ -2077,6 +2834,9 @@ def main() -> None:
     build_tab_termset_wordcloud(nb_term, root)
     build_tab_termset_dendro(nb_term, root)
 
+    # Cluster - Texte
+    build_tab_texts_scatter(nb_texts, root)
+    
     # Topics – Untertabs
     build_tab_topics(nb_top, root)
 

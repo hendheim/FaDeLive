@@ -91,17 +91,21 @@ fadelive/
 4. Skripte für Visualisierungen und Erkundung des Korpus in einem GUI-Tool: `src/tools_visualisations/`
 <br><br>
 ### Installation 
-Die Installation des Korpus setzt eine Umgebung mit `python 3.11` voraus.
+Die Installation des Korpus setzt eine Umgebung mit `python 3.11` voraus, idealerweise `3.11.13`, weil schon minor Updates die Kompatibilität von `gensim` und `numpy` und damit die Reproduzierbarkeit der Word-Vektor-Modelle beeinflussen. 
 Die Installation der benötigten Pakete ist ausgelegt für Anaconda und `python`:
 - mit Anaconda anhand von `environment.yml` in `main` (installiert auch python 3.11)<br>
 `conda env create -f environment.yml`<br>
     - im heruntergeladenen Programmordner von _fadelive_ einen Anaconda-Terminal öffnen und die Zeilen ausführen:<br>
-      `conda activate fadelive`<br>
-      `pip install .`
+```
+	conda activate fadelive <br>
+    pip install . 
+```
 
 - mit `python` anhand von `pyproject.toml` in `main` (`python 3.11` muss vorher installiert worden sein)
     - im heruntergeladenen Programmordner von _fadelive_ einen Terminal öffnen und die Zeilen ausführen:<br>
-`pip install .`
+```
+	pip install .
+```
 <br><br>
 ### Modul 1: Grundlegende NLP-Pipeline
 
@@ -112,9 +116,9 @@ Die Installation der benötigten Pakete ist ausgelegt für Anaconda und `python`
         - `resources/ocr_post-correction_dictionary_v1.txt` oder `resources/ocr_post-correction_dictionary_v2.txt`
         - Normalisierung des Vokabulars mit `resources/replacements_v1.json`, `resources/replacements_v2.json` oder `resources/replacements_v3.json`
 
-    - für _TXT (lem)_: Lemmatisierung mit `resources/morphmodel_ger.pgz` (HanoverTagger)
+    - für _TXT (lem)_: Lemmatisierung mit `resources/morphmodel_ger.pgz` (auf der Grundlage des Modells <https://github.com/wartaal/HanTa>)
 
-    - für _TXT (stop)_: Entfernung von Stoppwörtern mit `resources/stopwords_v1.txt` oder `resources/stopwords_v2.txt`
+    - für _TXT (stop)_: Entfernung von Stoppwörtern mit `resources/stopwords_v1.txt` oder `resources/stopwords_v2.txt` (auf der Grundlage von <https://github.com/solariz/german_stopwords>)
 
 2. Erzeugung des Vokabulars in `output/vocabular`
 
@@ -157,14 +161,19 @@ Das Korpus, das mit `config/fadelive_v3.toml` vorverarbeitet wird, ist die Versi
 
 Die mit `config/fadelive_v3.toml` erzeugten Ausgaben finden sich in <https://doi.org/10.25625/APN9VH>
 
+Die `.toml`-Konfigurationen können individuell angepasst werden. Dafür sind entsprechende Dummy-Dateien in `resources/` vorhanden.
+
 Neben den unterschiedlichen Pipeline-Konfigurationen gibt es eine allgemeine Pipeline, die genauso wie die Konfigurationen angepasst werden kann: `src/fadelive/pipeline/`.
 <br><br>
 #### Start der Pipelines
 Start einer konfigurierten Pipeline `fadelive_v3.toml` mit `src/fadelive/pipeline_config.py` im Terminal des Ordners von _fadelive_:<br> 
-`python -m fadelive.pipeline_config --config config/fadelive_v3.toml`
-
+```
+python -m fadelive.pipeline_config --config config/fadelive_v3.toml`
+```
 Start der Pipeline `src/fadelive/pipeline` im Terminal des Ordners von _fadelive_:<br>
-`python -m fadelive.main`
+```
+python -m fadelive.main
+```
 <br><br>
 ### Modul 2: Ausgabe des Vokabulars in einer beliebigen Verarbeitungsstufe
 
@@ -180,24 +189,24 @@ Mit diesem Modul können kontrollierte Vokabulare und Topicmodelle  verarbeitet 
 `src/procession_termsets_topics/s01_process_stop_pos_tag.py`:<br>
 Verarbeitung einer semantisch getaggten POS-Liste und Ausgabe einer Pivot-Tabelle der getaggten Ausdrücke in `output/processed_tag/`
 
-- **Voraussetzung** in `resources/stop_pos_tag/[Vokabular].csv`:<br>
+- **Voraussetzung** in `resources/stop_pos_tag/<vocabular>.csv`:<br>
     - semantisch getaggte POS-Liste mit den Spalten `word`, `tag1`, `tag2`, `tag3`
 
 `src/procession_termsets_topics/s02_process_topics.py`:<br> 
 Verarbeitung von Topics in `output/processed_topics`
 
-- **Voraussetzung** in `resources/topic-models/[Modell]/`:<br>
+- **Voraussetzung** in `resources/topic-models/<model>/`:<br>
     - Document-Topics-Distribution-Matrix als `.csv` mit Topics als Spaltenindex und Text-IDs als Zeilenindex<br>
     - Top-100-Word-Topic-Matrix `.csv` mit SpaltenIndex `Word 0` bis `Word 99` und Zeilenindex Topicbezeichnungen
 
 `src/procession_termsets_topics/s03_termset-topics_dtti.py`:<br> 
-Berechnung der Termset-Topic-Text-Verhältnisse in `output/processed_termset/[Termset]/`
+Berechnung der Termset-Topic-Text-Verhältnisse in `output/processed_termset/<termset>/`
 - **Voraussetzung**: <br>
-    - kontrolliertes Vokabular als Pivottabelle in `resources/termsets/[Termset].csv`<br>
+    - kontrolliertes Vokabular als Pivottabelle in `resources/termsets/<termset>.csv`<br>
     - verarbeitete Topics in `output/processed_topics/`
 
 `s04_process_termset-topics_dtti.py`:<br>
-Verarbeitung der Termset-Topic-Text-Verhältnisse in `output/processed_termset/[Termset]/`
+Verarbeitung der Termset-Topic-Text-Verhältnisse in `output/processed_termset/<termset>/`
 -  **Voraussetzung**:<br>
     - berechnete Termset-Topic-Text-Verhältnisse in `output/processed_termset/`
 
@@ -209,12 +218,14 @@ Entsprechend der Entwicklung der Verarbeitung des Korpus gibt es drei experiment
 - Taglisten: `resources/stop_pos_tag/`
 - Topic-Modelle: `resources/topic-models/`
 
+Innerhalb dieser Entwicklung wurden die drei Master-Termsets _Begriffe_, _Gegenstände_ und _Praktiken_ erzeugt. Sie befinden sich neben gattungsspezifischen Termsets in `resources/termsets/`. 
+
 **Exemplarische Anwendung im Kontext des Projektes**: 
 - es wurde eine POS-getaggte Vokabelliste semantisch getaggt
     - indem der POS-Tag-Liste `output/vocabular/vocab_top5000_stop_pos.csv` die Spalten `tag1`, `tag2` und `tag3` hinzugefügt,
     - die Ausdrücke mit bis zu drei Kategorien abstrahiert wurde,
 - daraus wurde anhand von `src/procession_termsets_topics/s01_process_stop_pos_tag.py` eine Pivot-Tabelle erzeugt,
-- anhand der Tag-Statistiken wurden relevante Tags ausgewählt und die Master-Termsets _Begriffe_, _Gegenstände_ und _Praktiken_ gebildet,
+- anhand der Tag-Statistiken wurden relevante Tags ausgewählt und die Master-Termsets _Begriffe_, _Gegenstände_ und _Praktiken_ erzeugt,
 - damit konnten Topics und Texte in Hinblick auf das Termset relativiert werden
 <br><br>
 ### Modul 4: Skripte für Visualisierungen und Erkundung des Korpus in einem GUI-Tool
@@ -261,9 +272,11 @@ Neben dem Tab *Daten* gibt es vier Kategorien mit Abfragen und Visualisierungen:
    ***Topics***
    - diachrone Topicverläufe an ausgewählten Topics (Visualisierung)
 
+   ***Texte***
+   - interaktive Clusterdiagramme der Texte (VIsualisierung)
 
 #### Tag-Topic-Explorer
-Der Tag-Topic-Explorer visualisiert die Topics diachron und die Tag-Topic-Verhältnisse sowohl synchron als auch diachron. Für die Abfragen werden die Verarbeitungen aus Modul 3 benötigt. Die Tag-Topic-Verhältnisse ermöglichen eine auf das jeweilige Termset relativierte Abfrage der Topics. Alle benötigten Dateien sind voreingestellt und können geändert werden. 
+Der Tag-Topic-Explorer visualisiert die Topics diachron und die Tag-Topic-Verhältnisse sowohl synchron als auch diachron. Für die Abfragen werden die Verarbeitungen aus Modul 3 benötigt. Die Tag-Topic-Verhältnisse ermöglichen eine auf das jeweilige Termset relativierte Abfrage der Topics. Alle benötigten Dateien sind auf den Arbeitsordner voreingestellt und können geändert werden. 
 
 `gui_tag-topic-explorer.py` benötigt
 - Termset als Pivot-Tabelle: `resources\termsets\Termset_Begriffe_2.3.csv`
@@ -297,6 +310,20 @@ Neben dem Tab *Daten* gibt es zwei Kategorien für Abfragen und Visualisierungen
    - Vergleich des Verlaufs von Tokens, Topics und Termset-Topic-Text-Verhältnisse (Visualisierung)
    - Rangliste der Texte relativ zu den Topics und zum Termset (Visualisierung)
 <br><br>
+### Resourcen
+In dem Ordner `resources/` befinden sich 
+- auf der ersten Ebene Dateien zur Vorverarbeitung des Korpus:
+    - das Lemmatisierungsmodel des HanoverTagger
+    - die Versionen der Vokabulare zur groben Tilgung von OCR-Fehlern `ocr_post-correction_dictionary_<version>.txt`
+    - die Versionen zur Normalisierung `replacements_<version>.json`
+    - die Listen an Stoppwörtern `stopwords_<version>.txt`
+- auf der zweiten Ebene
+    - in `stop_pos_tag/` die in den Experimenten und mit der dritten finalen Konfiguration `fadelive_v3.toml` erzeugten POS-Listen des semantisch und POS getaggten Vokabulars `vocab_top5000_stop_pos_tag_exp_<version>.csv` 
+    - in `termsets/` die in den Experimenten und an die Vorverarbeitung der dritten finalen Konfiguration `fadelive_v3,toml` angepassten Termsets 
+    - in `topic-models` die drei im Rahmen der Experimente erzeugten Topic-Modelle `topics_exp_<version>/` und das mit der dritten finalen Konfiguration `fadelive_v3.toml` erzeugte Topic-Modell `topics_v3/` in Form von
+        - `document-topics-distribution_tag.csv` und
+        - `fadelive_mallet_stop_topic_words_100_words_tag.csv`
+<br><br>
 ### Projektstruktur
 ```
 fadelive
@@ -319,12 +346,15 @@ fadelive
 │   │   morphmodel_ger.pgz
 │   │   ocr_post-correction_dictionary_v1.txt
 │   │   ocr_post-correction_dictionary_v2.txt
+│   │   ocr_post-correction_dictionary_dummy.txt
 │   │   replacements_v1.json
 │   │   replacements_v2.json
 │   │   replacements_v3.json
+│   │   replacements_dummy.json
 │   │   stopwords_v1.txt
 │   │   stopwords_v2.txt
 │   │   stopwords_v3.txt
+│   │   stopwords_dummy.txt
 │   │
 │   ├───stop_pos_tag
 │   │       vocab_top5000_stop_pos_tag_exp_v1.csv

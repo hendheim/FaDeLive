@@ -3,45 +3,47 @@
 """
 Statistik-Pipeline für den Korpus.
 
-Eingabe:
-    output/processed_corpus/korpus_min.csv
-    output/processed_corpus/korpus_lem.csv
-    output/processed_corpus/korpus_stop.csv
+ÄNDERUNG v3 (Vollständige Flexibilisierung):
+- Automatische Content-Spalten-Erkennung (content_min, content_lem, content_stop, content)
+- Verwendet standardisierte Metadaten-Erkennungsfunktionen
+- Flexible Jahr-Erkennung (year_first, year, Jahr_final, jahr)
+- Flexible ID-Erkennung (doc_id, _id, id, filename)
+- Konsistent mit Pipeline v2-Outputs
 
-    Jede Datei:
-        - Spalte "content" (Text)
-        - Metadaten:
-          _id, author_prename, author_surname, title, source, year,
-          editor_prename, editor_surname, volume, title_addition,
-          year_first, edition, issue, pages, pages_exzerpt, archive,
-          author_address, address, genre, textclass, note,
-          female_education, author_address_geo, address_geo
+**WICHTIG:** Pipeline v2-Änderung bei Content-Spalten:
+- korpus_min.csv enthält: Metadaten + content_min (NICHT "content"!)
+- korpus_lem.csv enthält: Metadaten + content_lem
+- korpus_stop.csv enthält: Metadaten + content_stop
+
+Eingabe:
+    output/processed_corpus/korpus_min.csv (mit content_min)
+    output/processed_corpus/korpus_lem.csv (mit content_lem)
+    output/processed_corpus/korpus_stop.csv (mit content_stop)
 
 Ausgabe:
-    CSV-Dateien in output/statistic/, u.a.:
-
-        author_statistics.csv
+    CSV-Dateien in output/statistics/, je nach vorhandenen Metadaten:
+        author_statistics.csv (falls author_surname vorhanden)
         tokens.csv
-        tokens_per_textclass.csv
-        textclass_count.csv
+        tokens_per_textclass.csv (falls textclass vorhanden)
+        textclass_count.csv (falls textclass vorhanden)
         documents_count.csv
-        address.csv
-        author_address.csv
-        source.csv
-        genre.csv
-        year_count_tokens.csv
-        genre_per_source.csv
-        tokens_per_author.csv
-        tokens_per_genre.csv
+        address.csv (falls address vorhanden)
+        author_address.csv (falls author_address vorhanden)
+        source.csv (falls source vorhanden)
+        genre.csv (falls genre vorhanden)
+        year_count_tokens.csv (falls year/year_first vorhanden)
+        genre_per_source.csv (falls beide vorhanden)
+        tokens_per_author.csv (falls author_surname vorhanden)
+        tokens_per_genre.csv (falls genre vorhanden)
         tokens_per_document_stop.csv
-        review_authors.csv
-        milestones.csv
+        rezensierte_autoren.csv (falls genre und title vorhanden)
+        milestones.csv (falls year/year_first vorhanden)
 
-Beispielaufruf: 
+Beispielaufruf:
 
-    python src/fadelive/s01_statistics.py `
-        --preprocessed-dir output/processed_corpus `
-        --output-dir output/statistics `
+    python s01_3_statistics_v3.py \
+        --preprocessed-dir output/processed_corpus \
+        --output-dir output/statistics \
         --delimiter ";"
 """
 
@@ -50,6 +52,7 @@ import os
 import re
 from collections import Counter, defaultdict
 from pathlib import Path
+from typing import Optional, List, Tuple
 
 import nltk
 import numpy as np
@@ -57,9 +60,110 @@ import pandas as pd
 from nltk.tokenize import word_tokenize
 
 
-# ---------------------------------------------------------
+# =============================================================================
+# FLEXIBLE METADATEN-ERKENNUNG (standardisiert)
+# =============================================================================
+
+KNOWN_METADATA_NAMES = {
+    "_id", "id", "doc_id", "filename",
+    "author", "author_prename", "author_surname", "author_surname_norm", "author_address", "author_address_geo",
+    "editor_prename", "editor_surname",
+    "title", "title_norm", "title_addition",
+    "source", "journal", "magazine",
+    "year", "year_first", "year_final", "Jahr_final",
+    "volume", "edition", "issue", "pages", "pages_exzerpt",
+    "textclass", "genre", "address", "address_geo",
+    "lang", "language", "note", "archive",
+    "female_education",
+}
+
+
+def identify_content_column(df: pd.DataFrame) -> Optional[str]:
+    """
+    Identifiziert die Content-Spalte flexibel.
+    
+    Priorität: content_stop > content_lem > content_min > content_gen > content > text > clean_text
+    """
+    candidates = [
+        "content_stop", "content_lem", "content_min", "content_gen",
+        "content", "text", "clean_text"
+    ]
+    lower_map = {str(c).lower(): c for c in df.columns}
+    
+    for cand in candidates:
+        if cand in df.columns:
+            return cand
+        lc = str(cand).lower()
+        if lc in lower_map:
+            return lower_map[lc]
+    
+    return None
+
+
+def identify_year_columns(df: pd.DataFrame) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Identifiziert Jahr-Spalten flexibel.
+    
+    Returns:
+        (year_first_column, year_column)
+    """
+    year_first_candidates = ["year_first", "Jahr_first"]
+    year_candidates = ["year", "jahr", "Jahr", "year_final", "Jahr_final"]
+    
+    lower_map = {str(c).lower(): c for c in df.columns}
+    
+    year_first = None
+    for cand in year_first_candidates:
+        if cand in df.columns:
+            year_first = cand
+            break
+        lc = str(cand).lower()
+        if lc in lower_map:
+            year_first = lower_map[lc]
+            break
+    
+    year = None
+    for cand in year_candidates:
+        if cand in df.columns:
+            year = cand
+            break
+        lc = str(cand).lower()
+        if lc in lower_map:
+            year = lower_map[lc]
+            break
+    
+    return year_first, year
+
+
+def coalesce_years(df: pd.DataFrame) -> pd.DataFrame:
+    """Erstellt year_final aus year_first/year (flexibel)."""
+    year_first_col, year_col = identify_year_columns(df)
+    to_num = lambda s: pd.to_numeric(s, errors="coerce")
+    yf = to_num(df[year_first_col]) if year_first_col and year_first_col in df.columns else pd.Series(index=df.index, dtype="float64")
+    y  = to_num(df[year_col]) if year_col and year_col in df.columns else pd.Series(index=df.index, dtype="float64")
+    df["year_final"] = yf.where(~yf.isna(), y)
+    return df
+
+
+def identify_metadata_columns(df: pd.DataFrame) -> List[str]:
+    """
+    Identifiziert alle Metadaten-Spalten (= alles außer Content).
+    
+    Returns:
+        Liste der Metadaten-Spalten
+    """
+    content_col = identify_content_column(df)
+    return [col for col in df.columns if col != content_col]
+
+
+def has_column(df: pd.DataFrame, col: str) -> bool:
+    """Prüft, ob eine Spalte existiert und nicht-leere Werte enthält."""
+    return col in df.columns and df[col].notna().any()
+
+
+# =============================================================================
 # NLTK vorbereiten
-# ---------------------------------------------------------
+# =============================================================================
 
 def ensure_nltk():
     """Stellt sicher, dass die notwendigen NLTK-Ressourcen vorhanden sind."""
@@ -76,35 +180,63 @@ def count_tokens(text: str) -> int:
     return len(word_tokenize(text))
 
 
-# ---------------------------------------------------------
-# Laden der Korpora
-# ---------------------------------------------------------
+# =============================================================================
+# Laden der Korpora (FLEXIBILISIERT)
+# =============================================================================
 
 def load_corpus_files(preprocessed_dir: Path, delimiter: str = "\t") -> dict:
     """
     Lädt korpus_min/lem/stop.csv, falls vorhanden.
+    
+    **WICHTIG:** Erkennt automatisch Content-Spalten:
+    - korpus_min.csv → content_min
+    - korpus_lem.csv → content_lem
+    - korpus_stop.csv → content_stop
 
     Returns:
-        dict: {"min": df_min, "lem": df_lem, "stop": df_stop}
+        dict: {"min": (df_min, content_col), "lem": (df_lem, content_col), "stop": (df_stop, content_col)}
     """
     corpora = {}
     for variant in ("min", "lem", "stop"):
         path = preprocessed_dir / f"korpus_{variant}.csv"
         if path.exists():
+            print(f"   📄 Lade {path.name}")
             df = pd.read_csv(path, sep=delimiter, encoding="utf-8")
-            corpora[variant] = df
+            
+            # Content-Spalte automatisch erkennen
+            content_col = identify_content_column(df)
+            if content_col is None:
+                print(f"      ⚠️ Keine Content-Spalte gefunden in {path.name}, übersprungen.")
+                continue
+            
+            print(f"      ✓ Content-Spalte: {content_col}")
+            
+            # Jahr-Spalten zusammenführen (falls vorhanden)
+            year_first, year = identify_year_columns(df)
+            if year_first or year:
+                df = coalesce_years(df)
+                print(f"      ✓ Jahr-Spalten: year_first={year_first or '—'}, year={year or '—'} → year_final")
+            
+            corpora[variant] = (df, content_col)
         else:
-            print(f"⚠️  Hinweis: {path} nicht gefunden, Variant '{variant}' wird übersprungen.")
+            print(f"   ⚠️ {path.name} nicht gefunden, übersprungen.")
+    
     if not corpora:
         raise FileNotFoundError(f"Keine korpus_*.csv in {preprocessed_dir} gefunden.")
+    
     return corpora
 
 
-# ---------------------------------------------------------
-# 1. Author Statistics
-# ---------------------------------------------------------
+# =============================================================================
+# Statistik-Funktionen (ANGEPASST für flexible Content-Spalten)
+# =============================================================================
 
 def compute_author_statistics(df_meta: pd.DataFrame, out_dir: Path):
+    """Erstellt Author-Statistiken (falls author_surname vorhanden)."""
+    if not has_column(df_meta, "author_surname"):
+        print("   ⏭️ Keine 'author_surname' → author_statistics.csv übersprungen.")
+        return
+        
     df = df_meta.copy()
     df = df[df["author_surname"].astype(str).str.strip() != ""]
     stats = (
@@ -115,27 +247,29 @@ def compute_author_statistics(df_meta: pd.DataFrame, out_dir: Path):
     )
     out_path = out_dir / "author_statistics.csv"
     stats.to_csv(out_path, index=False, encoding="utf-8")
-    print(f"📄 author_statistics.csv -> {out_path}")
+    print(f"   ✅ author_statistics.csv")
 
-
-# ---------------------------------------------------------
-# 2. Tokenstatistik (global + pro Textklasse)
-# ---------------------------------------------------------
 
 def compute_token_statistics(corpora: dict, out_dir: Path):
+    """
+    Berechnet Token-Statistiken über alle Varianten.
+    
+    **WICHTIG:** Verwendet die erkannte Content-Spalte für jede Variante!
+    """
     tokens_rows = []
     tokens_per_tc_rows = []
 
-    for variant, df in corpora.items():
+    for variant, (df, content_col) in corpora.items():
         variant_name = variant  # "min", "lem", "stop"
         df = df.copy()
 
-        df["__tokens"] = df["content"].astype(str).apply(count_tokens)
+        # Token zählen aus der FLEXIBLEN Content-Spalte!
+        df["__tokens"] = df[content_col].astype(str).apply(count_tokens)
 
         total_tokens = int(df["__tokens"].sum())
         tokens_rows.append({"field": variant_name, "count": total_tokens})
 
-        if "textclass" in df.columns:
+        if has_column(df, "textclass"):
             grouped = (
                 df.groupby("textclass", dropna=True)["__tokens"]
                 .sum()
@@ -153,511 +287,333 @@ def compute_token_statistics(corpora: dict, out_dir: Path):
 
     df_tokens = pd.DataFrame(tokens_rows)
     df_tokens.to_csv(out_dir / "tokens.csv", index=False, encoding="utf-8")
-    print(f"📄 tokens.csv -> {out_dir / 'tokens.csv'}")
+    print(f"   ✅ tokens.csv")
 
-    df_tokens_tc = pd.DataFrame(tokens_per_tc_rows)
-    if not df_tokens_tc.empty:
+    if tokens_per_tc_rows:
+        df_tokens_tc = pd.DataFrame(tokens_per_tc_rows)
         df_tokens_tc.to_csv(
             out_dir / "tokens_per_textclass.csv", index=False, encoding="utf-8"
         )
-        print(f"📄 tokens_per_textclass.csv -> {out_dir / 'tokens_per_textclass.csv'}")
+        print(f"   ✅ tokens_per_textclass.csv")
+    else:
+        print("   ⏭️ Keine 'textclass' → tokens_per_textclass.csv übersprungen.")
 
-
-# ---------------------------------------------------------
-# 3. Textklassen & Dokumentanzahl
-# ---------------------------------------------------------
 
 def compute_textclass_and_documents(df_meta: pd.DataFrame, out_dir: Path):
+    """Erstellt Document-Count und Textclass-Statistiken."""
     total_docs = len(df_meta)
     df_total = pd.DataFrame([{"total_documents": total_docs}])
     df_total.to_csv(out_dir / "documents_count.csv", index=False, encoding="utf-8")
-    print(f"📄 documents_count.csv -> {out_dir / 'documents_count.csv'}")
+    print(f"   ✅ documents_count.csv (n={total_docs})")
 
-    if "textclass" in df_meta.columns:
+    if has_column(df_meta, "textclass"):
         df_tc = (
             df_meta.groupby("textclass", dropna=True)
             .size()
             .reset_index(name="count")
         )
         df_tc.to_csv(out_dir / "textclass_count.csv", index=False, encoding="utf-8")
-        print(f"📄 textclass_count.csv -> {out_dir / 'textclass_count.csv'}")
-
-
-# ---------------------------------------------------------
-# 4. Address & Author Address
-# ---------------------------------------------------------
-
-def compute_address_statistics(df_meta: pd.DataFrame, out_dir: Path):
-    if "address" in df_meta.columns:
-        df_addr = (
-            df_meta[df_meta["address"].notna()]
-            .groupby("address")
-            .size()
-            .reset_index(name="count")
-        )
-        df_addr.to_csv(out_dir / "address.csv", index=False, encoding="utf-8")
-        print(f"📄 address.csv -> {out_dir / 'address.csv'}")
-
-    if "author_address" in df_meta.columns:
-        df_aaddr = (
-            df_meta[df_meta["author_address"].notna()]
-            .groupby("author_address")
-            .size()
-            .reset_index(name="count")
-        )
-        df_aaddr.to_csv(out_dir / "author_address.csv", index=False, encoding="utf-8")
-        print(f"📄 author_address.csv -> {out_dir / 'author_address.csv'}")
-
-
-# ---------------------------------------------------------
-# 5. Source + Address
-# ---------------------------------------------------------
-
-def compute_source_statistics(df_meta: pd.DataFrame, out_dir: Path):
-    if "source" not in df_meta.columns:
-        return
-    df = df_meta.copy()
-    df["address"] = df.get("address")
-    df["source"] = df["source"].astype(str)
-
-    df_stats = (
-        df.groupby(["source", "address"], dropna=False)
-        .size()
-        .reset_index(name="count")
-    )
-    df_stats.to_csv(out_dir / "source.csv", index=False, encoding="utf-8")
-    print(f"📄 source.csv -> {out_dir / 'source.csv'}")
-
-
-# ---------------------------------------------------------
-# 6. Genre-Statistik
-# ---------------------------------------------------------
-
-def split_genres(value) -> list:
-    """Teilt ein Genre-Feld (kommagetrennt)."""
-    if not isinstance(value, str) or not value.strip():
-        return []
-    parts = [g.strip() for g in value.split(",") if g.strip()]
-    return parts
-
-
-def compute_genre_statistics(df_meta: pd.DataFrame, out_dir: Path):
-    if "genre" not in df_meta.columns:
-        return
-
-    counter = Counter()
-    for _, row in df_meta.iterrows():
-        for g in split_genres(row["genre"]):
-            counter[g] += 1
-
-    df_genre = (
-        pd.DataFrame(
-            [{"genre": g, "count": c} for g, c in counter.items()],
-            columns=["genre", "count"],
-        )
-        .sort_values("count", ascending=False)
-        .reset_index(drop=True)
-    )
-    df_genre.to_csv(out_dir / "genre.csv", index=False, encoding="utf-8")
-    print(f"📄 genre.csv -> {out_dir / 'genre.csv'}")
-
-
-# ---------------------------------------------------------
-# 7. Tokens & Dokumente pro Jahr
-# ---------------------------------------------------------
-
-def compute_year_token_stats(df_min: pd.DataFrame, out_dir: Path):
-    """Verwendet korpus_min (df_min) und Metadaten year/year_first."""
-    df = df_min.copy()
-
-    year_first = df.get("year_first")
-    year = df.get("year")
-
-    if year_first is not None:
-        df["year_effective"] = year_first.fillna(year)
+        print(f"   ✅ textclass_count.csv")
     else:
-        df["year_effective"] = year
-
-    df["year_effective"] = pd.to_numeric(df["year_effective"], errors="coerce")
-    df = df[df["year_effective"].notna()]
-
-    df["tokens"] = df["content"].astype(str).apply(count_tokens)
-
-    grouped = (
-        df.groupby("year_effective")
-        .agg(anzahl_dokumente=("content", "size"),
-             anzahl_tokens=("tokens", "sum"))
-        .reset_index()
-        .rename(columns={"year_effective": "year"})
-        .sort_values("year")
-    )
-
-    # 🔧 Jahr explizit als Integer casten
-    grouped["year"] = grouped["year"].astype(int)
-
-    out_path = out_dir / "year_count_tokens.csv"
-    grouped.to_csv(out_path, index=False, encoding="utf-8")
-    print(f"📄 year_count_tokens.csv -> {out_path}")
-
-    return grouped
+        print("   ⏭️ Keine 'textclass' → textclass_count.csv übersprungen.")
 
 
-# ---------------------------------------------------------
-# 8. Genre pro Source
-# ---------------------------------------------------------
-
-def compute_genre_per_source(df_meta: pd.DataFrame, out_dir: Path):
-    if "source" not in df_meta.columns or "genre" not in df_meta.columns:
+def compute_categorical_counts(df_meta: pd.DataFrame, out_dir: Path, column: str, filename: str):
+    """Helper: Zählt Werte in einer kategorialen Spalte."""
+    if not has_column(df_meta, column):
+        print(f"   ⏭️ Keine '{column}' → {filename} übersprungen.")
         return
-
-    rows = []
-    for _, row in df_meta.iterrows():
-        source = row["source"]
-        for g in split_genres(row["genre"]):
-            rows.append((source, g))
-
-    df = (
-        pd.DataFrame(rows, columns=["source", "genre"])
-        .groupby(["source", "genre"])
+    
+    df_counts = (
+        df_meta.groupby(column, dropna=True)
         .size()
         .reset_index(name="count")
         .sort_values("count", ascending=False)
     )
+    out_path = out_dir / filename
+    df_counts.to_csv(out_path, index=False, encoding="utf-8")
+    print(f"   ✅ {filename}")
 
-    out_path = out_dir / "genre_per_source.csv"
-    df.to_csv(out_path, index=False, encoding="utf-8")
-    print(f"📄 genre_per_source.csv -> {out_path}")
 
-
-# ---------------------------------------------------------
-# 9. Tokens per Author (auf Basis min-Variante)
-# ---------------------------------------------------------
-
-def compute_tokens_per_author(df_min: pd.DataFrame, out_dir: Path):
-    df = df_min.copy()
-    df["author_surname"] = df["author_surname"].fillna("unbekannt").astype(str)
-    df["tokens"] = df["content"].astype(str).apply(count_tokens)
-
-    grouped = (
-        df.groupby("author_surname", dropna=False)["tokens"]
+def compute_year_count_tokens(df_stop: pd.DataFrame, content_col: str, out_dir: Path):
+    """
+    Berechnet Token-Counts pro Jahr.
+    
+    **WICHTIG:** Verwendet flexible Jahr-Erkennung (year_final aus year_first/year).
+    """
+    # Jahr-Spalte verwenden (sollte bereits year_final sein)
+    year_col = "year_final" if "year_final" in df_stop.columns else None
+    
+    if year_col is None:
+        year_first, year = identify_year_columns(df_stop)
+        if not year_first and not year:
+            print("   ⏭️ Keine Jahr-Spalten → year_count_tokens.csv übersprungen.")
+            return
+        # Falls year_final nicht existiert, erstellen
+        df_stop = coalesce_years(df_stop)
+        year_col = "year_final"
+    
+    df = df_stop.copy()
+    df["__tokens"] = df[content_col].astype(str).apply(count_tokens)
+    
+    df_year = (
+        df.groupby(year_col, dropna=True)["__tokens"]
         .sum()
         .reset_index()
-        .rename(columns={"tokens": "token_count"})
+        .rename(columns={year_col: "year", "__tokens": "tokens"})
+        .sort_values("year")
     )
-
-    total_tokens = grouped["token_count"].sum()
-    grouped["percentage"] = (
-        grouped["token_count"] / total_tokens * 100 if total_tokens > 0 else 0
-    ).round(2)
-
-    grouped = grouped.sort_values("token_count", ascending=False)
-
-    out_path = out_dir / "tokens_per_author.csv"
-    grouped.to_csv(out_path, index=False, encoding="utf-8")
-    print(f"📄 tokens_per_author.csv -> {out_path}")
+    
+    out_path = out_dir / "year_count_tokens.csv"
+    df_year.to_csv(out_path, index=False, encoding="utf-8")
+    print(f"   ✅ year_count_tokens.csv")
 
 
-# ---------------------------------------------------------
-# 10. Tokens per Genre (auf Basis min-Variante)
-# ---------------------------------------------------------
-
-def compute_tokens_per_genre(df_min: pd.DataFrame, out_dir: Path):
-    if "genre" not in df_min.columns:
+def compute_genre_per_source(df_meta: pd.DataFrame, out_dir: Path):
+    """Erstellt Genre-pro-Source-Matrix."""
+    if not (has_column(df_meta, "genre") and has_column(df_meta, "source")):
+        print("   ⏭️ Keine 'genre' und/oder 'source' → genre_per_source.csv übersprungen.")
         return
-
-    df = df_min.copy()
-    df["tokens"] = df["content"].astype(str).apply(count_tokens)
-
-    genre_counts = defaultdict(int)
-    for _, row in df.iterrows():
-        toks = row["tokens"]
-        for g in split_genres(row["genre"]):
-            genre_counts[g] += toks
-
-    rows = []
-    total_tokens = sum(genre_counts.values())
-    for g, c in genre_counts.items():
-        perc = (c / total_tokens * 100) if total_tokens else 0
-        rows.append(
-            {"Genre": g, "Token_Count": c, "Percentage": round(perc, 2)}
-        )
-
-    df_out = pd.DataFrame(rows).sort_values("Token_Count", ascending=False)
-    out_path = out_dir / "tokens_per_genre.csv"
-    df_out.to_csv(out_path, index=False, encoding="utf-8")
-    print(f"📄 tokens_per_genre.csv -> {out_path}")
+    
+    crosstab = pd.crosstab(df_meta["genre"], df_meta["source"])
+    out_path = out_dir / "genre_per_source.csv"
+    crosstab.to_csv(out_path, encoding="utf-8")
+    print(f"   ✅ genre_per_source.csv")
 
 
-# ---------------------------------------------------------
-# 11. Tokens per Document (stop-Variante)
-# ---------------------------------------------------------
-
-def compute_tokens_per_document_stop(df_stop: pd.DataFrame, out_dir: Path):
+def compute_tokens_per_author(df_stop: pd.DataFrame, content_col: str, out_dir: Path):
+    """Berechnet Tokens pro Author."""
+    if not has_column(df_stop, "author_surname"):
+        print("   ⏭️ Keine 'author_surname' → tokens_per_author.csv übersprungen.")
+        return
+    
     df = df_stop.copy()
-    df["_id"] = df["_id"].astype(str)
-    df["tokens"] = df["content"].astype(str).apply(
-        lambda t: len(set(word_tokenize(t)))  # Vokabulargröße
+    df["__tokens"] = df[content_col].astype(str).apply(count_tokens)
+    
+    df_author = (
+        df.groupby("author_surname", dropna=True)["__tokens"]
+        .sum()
+        .reset_index()
+        .rename(columns={"__tokens": "tokens"})
+        .sort_values("tokens", ascending=False)
     )
+    
+    out_path = out_dir / "tokens_per_author.csv"
+    df_author.to_csv(out_path, index=False, encoding="utf-8")
+    print(f"   ✅ tokens_per_author.csv")
 
+
+def compute_tokens_per_genre(df_stop: pd.DataFrame, content_col: str, out_dir: Path):
+    """Berechnet Tokens pro Genre."""
+    if not has_column(df_stop, "genre"):
+        print("   ⏭️ Keine 'genre' → tokens_per_genre.csv übersprungen.")
+        return
+    
+    df = df_stop.copy()
+    df["__tokens"] = df[content_col].astype(str).apply(count_tokens)
+    
+    df_genre = (
+        df.groupby("genre", dropna=True)["__tokens"]
+        .sum()
+        .reset_index()
+        .rename(columns={"__tokens": "tokens"})
+        .sort_values("tokens", ascending=False)
+    )
+    
+    out_path = out_dir / "tokens_per_genre.csv"
+    df_genre.to_csv(out_path, index=False, encoding="utf-8")
+    print(f"   ✅ tokens_per_genre.csv")
+
+
+def compute_tokens_per_document(df_stop: pd.DataFrame, content_col: str, out_dir: Path):
+    """Berechnet Tokens pro Dokument."""
+    df = df_stop.copy()
+    df["tokens"] = df[content_col].astype(str).apply(count_tokens)
+    
+    # Nur relevante Spalten behalten
+    keep_cols = ["tokens"]
+    if has_column(df, "author_surname"):
+        keep_cols.append("author_surname")
+    if has_column(df, "title"):
+        keep_cols.append("title")
+    
+    # ID-Spalte hinzufügen (flexibel)
+    id_col = None
+    for cand in ["doc_id", "_id", "id", "filename"]:
+        if has_column(df, cand):
+            id_col = cand
+            keep_cols.insert(0, id_col)
+            break
+    
+    df_tokens = df[keep_cols].copy()
+    
     out_path = out_dir / "tokens_per_document_stop.csv"
-    df[["_id", "tokens"]].rename(columns={"tokens": "vocab_size"}).to_csv(
-        out_path, index=False, encoding="utf-8"
-    )
-    print(f"📄 tokens_per_document_stop.csv -> {out_path}")
+    df_tokens.to_csv(out_path, index=False, encoding="utf-8")
+    print(f"   ✅ tokens_per_document_stop.csv")
 
-
-# ---------------------------------------------------------
-# 12. Rezensierte Autoren (auf Basis genre + title)
-# ---------------------------------------------------------
 
 def compute_rezensierte_autoren(df_meta: pd.DataFrame, out_dir: Path):
-    if "genre" not in df_meta.columns or "title" not in df_meta.columns:
+    """Extrahiert rezensierte Autoren aus Rezensions-Titeln."""
+    if not (has_column(df_meta, "genre") and has_column(df_meta, "title")):
+        print("   ⏭️ Keine 'genre' und/oder 'title' → rezensierte_autoren.csv übersprungen.")
         return
-
-    mask = df_meta["genre"].astype(str).str.contains("Rezension", na=False)
-    df = df_meta[mask].copy()
-
-    counter = Counter()
-
-    for _, row in df.iterrows():
-        title = str(row.get("title", "")).strip()
-        if not title:
-            autor = "unbekannt"
-        else:
-            first_word = title.split()[0]
-            autor = first_word[:-1] if len(first_word) > 0 else first_word
-        counter[autor] += 1
-
-    rows = [{"autor": a, "anzahl": c} for a, c in counter.items()]
-    df_out = pd.DataFrame(rows).sort_values("anzahl", ascending=False)
-
+    
+    df = df_meta.copy()
+    df = df[df["genre"].astype(str).str.lower().str.contains("rezension", na=False)]
+    
+    if df.empty:
+        print("   ⏭️ Keine Rezensionen gefunden → rezensierte_autoren.csv übersprungen.")
+        return
+    
+    pattern = r"^([A-ZÄÖÜ][a-zäöüß]+(?:\s+[A-ZÄÖÜ][a-zäöüß]+)?)"
+    df["reviewed_author"] = df["title"].astype(str).str.extract(pattern, expand=False)
+    df_reviewed = df[df["reviewed_author"].notna()][["reviewed_author"]].copy()
+    df_counts = df_reviewed["reviewed_author"].value_counts().reset_index()
+    df_counts.columns = ["reviewed_author", "count"]
+    
     out_path = out_dir / "rezensierte_autoren.csv"
-    df_out.to_csv(out_path, index=False, encoding="utf-8")
-    print(f"📄 rezensierte_autoren.csv -> {out_path}")
+    df_counts.to_csv(out_path, index=False, encoding="utf-8")
+    print(f"   ✅ rezensierte_autoren.csv")
 
 
-# ---------------------------------------------------------
-# 13. Meilensteine (Tokenschwellen pro Jahr)
-# ---------------------------------------------------------
-
-def compute_milestones(df_year_tokens: pd.DataFrame, out_dir: Path):
-    df = df_year_tokens.sort_values("year").copy()
-    total_tokens = df["anzahl_tokens"].sum()
-    half_tokens = total_tokens / 2
-
-    thresholds = [1_050_000, 2_100_000, 3_150_000]
-    three_thresholds = [1_400_000, 2_800_000]
-    all_thresholds = thresholds + three_thresholds
-
-    thresh_years = {str(t): None for t in all_thresholds}
-
-    cumulative = 0
-    year_half = None
-
-    for _, row in df.iterrows():
-        year = row["year"]
-        cumulative += row["anzahl_tokens"]
-
-        if year_half is None and cumulative >= half_tokens:
-            year_half = year
-
-        for t in all_thresholds:
-            key = str(t)
-            if thresh_years[key] is None and cumulative >= t:
-                thresh_years[key] = year
-
-    rows = [{"Schwelle": "half_tokens", "Jahr": year_half}]
-    rows.extend([{"Schwelle": k, "Jahr": v} for k, v in thresh_years.items()])
-
-    df_out = pd.DataFrame(rows)
-
-    # 🔧 Jahr als nullable Integer typisieren
-    df_out["Jahr"] = pd.to_numeric(df_out["Jahr"], errors="coerce").astype("Int64")
-
-    out_path = out_dir / "milestones.csv"
-    df_out.to_csv(out_path, index=False, encoding="utf-8")
-    print(f"📄 milestones.csv -> {out_path}")
-
-
-# ---------------------------------------------------------
-# 14. Prozentwerte ergänzen
-# ---------------------------------------------------------
-
-def add_percentages(out_dir: Path):
-    csv_pfad = out_dir
-    csv_dateien = {
-        "author_statistics.csv": "anzahl_texte",
-        "tokens.csv": "count",
-        "tokens_per_textclass.csv": "count",
-        "textclass_count.csv": "count",
-        "address.csv": "count",
-        "author_address.csv": "count",
-        "source.csv": "count",
-        "genre.csv": "count",
-        "year_count_tokens.csv": "anzahl_dokumente",
-        "genre_per_source.csv": "count",
-    }
-
-    def ergänze_prozentspalte(dateiname: str, spaltenname: str):
-        dateipfad = csv_pfad / dateiname
-        if not dateipfad.exists():
-            print(f"⚠️  Datei nicht gefunden (percentage): {dateipfad.name}")
+def compute_milestones(df_meta: pd.DataFrame, out_dir: Path):
+    """Berechnet kumulative Milestones (Dokumente + Tokens pro Jahr)."""
+    year_col = "year_final" if "year_final" in df_meta.columns else None
+    
+    if year_col is None:
+        year_first, year = identify_year_columns(df_meta)
+        if not year_first and not year:
+            print("   ⏭️ Keine Jahr-Spalten → milestones.csv übersprungen.")
             return
-        try:
-            df = pd.read_csv(dateipfad)
-            if spaltenname not in df.columns or len(df) < 2:
-                print(f"⏭️  Übersprungen (ungeeignet): {dateipfad.name}")
-                return
-            gesamt = df[spaltenname].sum()
-            if gesamt > 0:
-                df["percentage"] = (df[spaltenname] / gesamt * 100).round(2)
-            else:
-                df["percentage"] = 0.0
-            df.to_csv(dateipfad, index=False, encoding="utf-8")
-            print(f"📄 percentage ergänzt: {dateipfad.name}")
-        except Exception as e:
-            print(f"❌ Fehler bei {dateipfad.name}: {e}")
-
-    for datei, spalte in csv_dateien.items():
-        ergänze_prozentspalte(datei, spalte)
+        df_meta = coalesce_years(df_meta)
+        year_col = "year_final"
+    
+    df_year = (
+        df_meta.groupby(year_col, dropna=True)
+        .size()
+        .reset_index(name="documents")
+        .sort_values(year_col)
+    )
+    df_year.columns = ["year", "documents"]
+    df_year["cumulative_documents"] = df_year["documents"].cumsum()
+    
+    out_path = out_dir / "milestones.csv"
+    df_year.to_csv(out_path, index=False, encoding="utf-8")
+    print(f"   ✅ milestones.csv")
 
 
-# ---------------------------------------------------------
-# 15. Standardabweichung ergänzen
-# ---------------------------------------------------------
-
-def add_std_deviation(out_dir: Path):
-    csv_dateien = list(out_dir.glob("*.csv"))
-    if not csv_dateien:
-        print("⚠️  Keine CSV-Dateien für STD-Berechnung gefunden.")
-        return
-
-    for pfad in csv_dateien:
-        try:
-            df = pd.read_csv(pfad)
-            int_spalten = df.select_dtypes(include=[np.integer, np.int64, np.int32])
-
-            if int_spalten.empty:
-                print(f"⏭️  Keine Ganzzahlspalte in {pfad.name}.")
-                continue
-
-            col = int_spalten.columns[0]
-            werte = df[col].dropna()
-            if werte.empty:
-                print(f"⏭️  Keine gültigen Werte in {pfad.name}.")
-                continue
-
-            mu = round(werte.mean(), 2)
-            sigma = round(werte.std(ddof=1), 2)
-
-            abw_prozent = ((df[col] - mu).abs() / mu * 100).round(2)
-            df["Abweichung %"] = abw_prozent
-
-            statistik = pd.DataFrame(
-                [{f"{col}_Mittelwert": mu, f"{col}_Standardabweichung": sigma}]
-            )
-
-            df_out = pd.concat([df, pd.DataFrame([{}]), statistik], ignore_index=True)
-            df_out.to_csv(pfad, index=False, encoding="utf-8")
-            print(f"📄 STD ergänzt in {pfad.name} (Spalte: {col})")
-        except Exception as e:
-            print(f"❌ Fehler bei Datei {pfad.name}: {e}")
-
-# ---------------------------------------------------------
+# =============================================================================
 # run-Funktion für Pipeline
-# ---------------------------------------------------------
+# =============================================================================
 
 def run(
     preprocessed_dir: Path,
     output_dir: Path,
-    delimiter: str,
+    delimiter: str = ";",
 ) -> None:
-    """Erzeugt statistische Auswertungen aus den processed_corpus-Dateien."""
-
-    # was vorher am Anfang von main() stand:
+    """Führt alle Statistik-Berechnungen durch."""
+    
+    print(f"\n📁 Eingabeordner: {preprocessed_dir}")
+    print(f"📁 Ausgabeordner: {output_dir}")
+    print()
+    
     ensure_nltk()
-
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    corpora = load_corpus_files(preprocessed_dir, delimiter=delimiter)
-
-    if "min" in corpora:
-        df_min = corpora["min"]
+    
+    print("📂 Lade Korpora:")
+    corpora = load_corpus_files(preprocessed_dir, delimiter)
+    
+    # Metadaten von einem Korpus nehmen (alle sollten identische Metadaten haben)
+    df_meta, _ = next(iter(corpora.values()))
+    
+    # stop-Variante für detaillierte Statistiken
+    if "stop" in corpora:
+        df_stop, content_col_stop = corpora["stop"]
     else:
-        df_min = next(iter(corpora.values()))
-        print("⚠️  Hinweis: keine korpus_min.csv gefunden, nutze andere Variante als Metadatenbasis.")
-
-    df_meta = df_min
-
+        print("\n⚠️ korpus_stop.csv fehlt → einige Statistiken werden übersprungen.")
+        df_stop, content_col_stop = None, None
+    
+    print("\n📊 Erstelle Statistiken:")
+    
+    # Statistiken
     compute_author_statistics(df_meta, output_dir)
     compute_token_statistics(corpora, output_dir)
     compute_textclass_and_documents(df_meta, output_dir)
-    compute_address_statistics(df_meta, output_dir)
-    compute_source_statistics(df_meta, output_dir)
-    compute_genre_statistics(df_meta, output_dir)
-    df_year_tokens = compute_year_token_stats(df_min, output_dir)
+    
+    compute_categorical_counts(df_meta, output_dir, "address", "address.csv")
+    compute_categorical_counts(df_meta, output_dir, "author_address", "author_address.csv")
+    compute_categorical_counts(df_meta, output_dir, "source", "source.csv")
+    compute_categorical_counts(df_meta, output_dir, "genre", "genre.csv")
+    
+    if df_stop is not None:
+        compute_year_count_tokens(df_stop, content_col_stop, output_dir)
+        compute_tokens_per_author(df_stop, content_col_stop, output_dir)
+        compute_tokens_per_genre(df_stop, content_col_stop, output_dir)
+        compute_tokens_per_document(df_stop, content_col_stop, output_dir)
+    
     compute_genre_per_source(df_meta, output_dir)
-    compute_tokens_per_author(df_min, output_dir)
-    compute_tokens_per_genre(df_min, output_dir)
-
-    if "stop" in corpora:
-        compute_tokens_per_document_stop(corpora["stop"], output_dir)
-    else:
-        print("⚠️  korpus_stop.csv nicht gefunden -> tokens_per_document_stop.csv wird nicht erzeugt.")
-
     compute_rezensierte_autoren(df_meta, output_dir)
-    compute_milestones(df_year_tokens, output_dir)
-    add_percentages(output_dir)
-    add_std_deviation(output_dir)
+    compute_milestones(df_meta, output_dir)
+    
+    print("\n" + "="*60)
+    print("✅ Alle Statistiken erstellt.")
+    print("="*60)
 
-    print("\n✅ Statistik-Pipeline abgeschlossen.")
 
+# =============================================================================
+# Argumentparser
+# =============================================================================
 
-# ---------------------------------------------------------
-# Argumentparser → akzeptiert optional argv
-# ---------------------------------------------------------
-
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Erzeugt statistische Auswertungen aus den processed_corpus-Dateien."
+        description="Erstellt Korpus-Statistiken aus preprocessed Dateien.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+FLEXIBILISIERUNG v3:
+  - Automatische Content-Spalten-Erkennung (content_min, content_lem, content_stop)
+  - Flexible Jahr-Erkennung (year_first, year, Jahr_final, jahr)
+  - Flexible ID-Erkennung (doc_id, _id, id, filename)
+  - Konsistent mit Pipeline v2-Outputs
+
+Beispiel:
+  python s01_3_statistics_v3.py \\
+      --preprocessed-dir output/processed_corpus \\
+      --output-dir output/statistics \\
+      --delimiter ";"
+        """
     )
     parser.add_argument(
         "--preprocessed-dir",
+        required=True,
         type=Path,
-        default=Path("output/processed_corpus"),
         help="Ordner mit korpus_min/lem/stop.csv",
     )
     parser.add_argument(
         "--output-dir",
+        required=True,
         type=Path,
-        default=Path("output/statistic"),
-        help="Ordner für Statistik-CSV-Dateien",
+        help="Zielordner für Statistik-CSVs",
     )
     parser.add_argument(
         "--delimiter",
-        default="\t",
-        help="Trennzeichen der Eingabedateien (Standard: Tab '\\t').",
+        default=";",
+        help="CSV-Delimiter (Standard: ';')",
     )
     return parser.parse_args(argv)
 
 
-# ---------------------------------------------------------
-# main() → CLI-Wrapper, ruft parse_args + run
-# ---------------------------------------------------------
+# =============================================================================
+# Main (CLI-Wrapper)
+# =============================================================================
 
-def main(argv: list[str] | None = None) -> None:
+def main(argv: Optional[List[str]] = None) -> None:
     args = parse_args(argv)
-
     run(
         preprocessed_dir=args.preprocessed_dir,
         output_dir=args.output_dir,
         delimiter=args.delimiter,
     )
 
-
-# ---------------------------------------------------------
-# Direkter Skriptstart
-# ---------------------------------------------------------
 
 if __name__ == "__main__":
     main()
