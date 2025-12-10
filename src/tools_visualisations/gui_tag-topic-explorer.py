@@ -60,7 +60,7 @@ class FileDiscovery:
             'tfidf': self._find_tfidf(),
             
             # Processed termset (Dateiende fix: *{suffix})
-            'ranks': self._find_in_processed_termset('rank'),
+            'ranks': self._find_in_processed_termset('rank', 'tag', 'topic'),
             'relevance': self._find_in_processed_termset('relevance'),
             'counts_per_year': self._find_in_processed_termset('counts', 'year'),
             'top10_year_value': self._find_in_processed_termset('top10', 'year', 'value'),
