@@ -60,11 +60,15 @@ class FileDiscovery:
             'tfidf': self._find_tfidf(),
             
             # Processed termset (Dateiende fix: *{suffix})
-            'ranks': self._find_in_processed_termset('rank', 'tag', 'topic'),
+            'ranks': self._find_in_processed_termset('rank')
+                and self._find_in_processed_termset('topic'),
             'relevance': self._find_in_processed_termset('relevance'),
-            'counts_per_year': self._find_in_processed_termset('counts', 'year'),
-            'top10_year_value': self._find_in_processed_termset('top10', 'year', 'value'),
-            'top10_value_per_text': self._find_in_processed_termset('top10', 'value', 'text'),
+            'counts_per_year': self._find_in_processed_termset('counts')
+                and self._find_in_processed_termset('year'),
+            'top10_year_value': self._find_in_processed_termset('year')
+                and self._find_in_processed_termset('value'),
+            'top10_value_per_text': self._find_in_processed_termset('value')
+                and self._find_in_processed_termset('text'),
             
             # Topic models (Dateiname fix)
             'topics_dist': self._find_topics_dist(),
