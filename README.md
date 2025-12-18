@@ -159,7 +159,7 @@ Bei dem Korpus handelt es sich um eine Sammlung historischer Texte, deren adäqu
 
 Das Korpus, das mit `config/fadelive_v3.toml` vorverarbeitet wird, ist die Version, in der die Verarbeitung des Vokabulars am besten normalisiert ist und Fehler bei der Ersetzung und der Entfernung von Stoppwörtern beseitigt wurden. 
 
-Die mit `config/fadelive_v3.toml` erzeugten Ausgaben finden sich in <https://doi.org/10.25625/APN9VH>
+Die mit `config/fadelive_v1.toml` erzeugten Ausgaben des ersten Experiments `fadelive_exp_v1` finden sich in <https://doi.org/10.25625/APN9VH>.
 
 Die `.toml`-Konfigurationen können individuell angepasst werden. Dafür sind entsprechende Dummy-Dateien in `resources/` vorhanden.
 
