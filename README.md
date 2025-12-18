@@ -97,7 +97,7 @@ Die Installation der benötigten Pakete ist ausgelegt für Anaconda und `python`
 `conda env create -f environment.yml`<br>
     - im heruntergeladenen Programmordner von _fadelive_ einen Anaconda-Terminal öffnen und die Zeilen ausführen:<br>
 ```
-	conda activate fadelive <br>
+	conda activate fadelive
     pip install . 
 ```
 
