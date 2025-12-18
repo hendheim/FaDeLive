@@ -259,7 +259,7 @@ Neben dem Tab *Daten* gibt es vier Kategorien mit Abfragen und Visualisierungen:
    - Top-Embeddings von Ausdrücken und Kosinus-Werte vergleichen (Abfrage)
    - Netzwerk von Ausdrücken anhand von Embeddinganzahl und Ähnlichkeitsschwelle (Abfrage)
 
-   ***Termset***, 
+   ***Termset***
    - Streudiagramm eines Termsets anhand des Wort-Vektor-Modells mit dem Dimensionsreduktionsalgorithmus _UMAP_ und dem hierarchischen Clusteralgorithmus von `scikit-learn` (Visualisierung)<br>
        Parameter:
         - Clusteranzahl
@@ -310,7 +310,7 @@ Neben dem Tab *Daten* gibt es zwei Kategorien für Abfragen und Visualisierungen
    - Vergleich des Verlaufs von Tokens, Topics und Termset-Topic-Text-Verhältnisse (Visualisierung)
    - Rangliste der Texte relativ zu den Topics und zum Termset (Visualisierung)
 <br><br>
-### Resourcen
+### Ressourcen
 In dem Ordner `resources/` befinden sich 
 - auf der ersten Ebene Dateien zur Vorverarbeitung des Korpus:
     - das Lemmatisierungsmodel des HanoverTagger
