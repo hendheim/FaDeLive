@@ -14,7 +14,12 @@ Es umfasst
 - die Pipeline, Tools und Ressourcen zur Vorverarbeitung sowie für die Verarbeitung des Korpus,
 - ein GUI-Tool zur Exploration und Visualisierung des verarbeiteten Korpus. 
 
-Die Pipeline und weiteren Tools zur Verarbeitung, Exploration und Visualisierung können mit Anpassungen auch für andere Korpora verwendet werden. 
+Die Pipeline und weiteren Tools zur Verarbeitung, Exploration und Visualisierung können mit Anpassungen auch für andere Korpora verwendet werden. Die Inputs sind
+
+- `data/raw/metadata.csv`: Metadaten zum Korpus als Spaltenindex, mit `id`
+- `data/raw/metadata.csv`: Metadaten mit Korpus in `content` als Spaltenindex, mit `id`
+
+Eine Vorlage für klassische Textquellen, mit der alle antizipierten Ausgaben der Pipeline und des GUI-Tools möglich sind, findet sich in `data/raw/metadata_template.csv`.
 
 **Schlagwörter**: 
 - Computerlinguistik
@@ -25,7 +30,7 @@ Die Pipeline und weiteren Tools zur Verarbeitung, Exploration und Visualisierung
 - Computational Discourse Analyses
 <br><br>
 ## 2. Datengrundlage
-Die Pipeline erwartet ein Korpus in folgendem Format: <br>
+Für die Pipeline ist ein Korpus in folgendem Format voreingestellt: <br>
 **Datei**: `data/raw/korpus.csv`<br>
 **Encoding**: utf-8<br>
 **Trennzeichen**: Semikolon<br>
@@ -106,9 +111,31 @@ Die Installation der benötigten Pakete ist ausgelegt für Anaconda und `python`
 ```
 	pip install .
 ```
-<br><br>
+
 ### Modul 1: Grundlegende NLP-Pipeline
 
+#### Start der Pipeline
+Start einer konfigurierten Pipeline `fadelive_v3.toml` mit `src/fadelive/pipeline_config.py` im Terminal des Ordners von _fadelive_:<br> 
+```
+python -m fadelive.pipeline_config --config config/fadelive_v3.toml
+```
+
+#### Konfiguration der Pipeline
+Bei dem Korpus handelt es sich um eine Sammlung historischer Texte, deren adäquate Verarbeitung angesichts der Normalisierung und der Entfernung von Stoppwörtern herausfordernd ist. Im Lauf des Projektes wurde die Vorverarbeitung kontinuierlich verbessert, um das Vokabular zu vereinheitlichen. Um auch die Reproduzierbarkeit der Verbesserung des Korpus im Laufe erster Experimente zu ermöglichen, kann die Pipeline `src/fadelive/pipeline_config.py` mit drei unterschiedlichen Konfigurationen ausgeführt werden:
+
+- `config/fadelive_v1.toml` mit `ocr_post-correction_dictionary_v1.txt`, `resources/replacements_v1.json`, `resources/stopwords_v1.txt`
+
+- `config/fadelive_v2.toml` mit `ocr_post-correction_dictionary_v2.txt`, `resources/replacements_v2.json`, `resources/stopwords_v1.txt`
+
+- `config/fadelive_v3.toml` mit `ocr_post-correction_dictionary_v2.txt`, `resources/replacements_v3.json`, `resources/stopwords_v2.txt`
+
+Das Korpus, das mit `config/fadelive_v3.toml` vorverarbeitet wird, ist die Version, in der die Verarbeitung des Vokabulars am besten normalisiert ist und Fehler bei der Ersetzung und der Entfernung von Stoppwörtern beseitigt wurden. 
+
+Die mit `config/fadelive_v1.toml` erzeugten Ausgaben des ersten Experiments `fadelive_exp_v1` finden sich in <https://doi.org/10.25625/APN9VH>.
+
+Die `.toml`-Konfigurationen können individuell angepasst werden. Dafür sind entsprechende Dummy-Dateien in `resources/` vorhanden.
+<br><br>
+#### Funktionen der Pipeline
 1. Vorverarbeitung von `data/raw/korpus.csv` und Erzeugung der Verarbeitungsstufen _TXT (min)_, _TXT (lem)_, _TXT (stop)_ in `output/processed_corpus`
 
     - für _TXT (min)_: Säuberung von OCR-Fehlern mit
@@ -147,33 +174,6 @@ Die Installation der benötigten Pakete ist ausgelegt für Anaconda und `python`
 9. Erzeugung der tfidf-Ranglisten des Vokabulars und der Texte in `output/tfidf_rank/`
 
 10. Erzeugung des Wort-Vektor-Modells des Korpus in `output/word2vec_models`
-<br><br>
-#### Konfiguration der Pipeline
-Bei dem Korpus handelt es sich um eine Sammlung historischer Texte, deren adäquate Verarbeitung angesichts der Normalisierung und der Entfernung von Stoppwörtern herausfordernd ist. Im Lauf des Projektes wurde die Vorverarbeitung kontinuierlich verbessert, um das Vokabular zu vereinheitlichen. Um auch die Reproduzierbarkeit der Verbesserung des Korpus im Laufe erster Experimente zu ermöglichen, kann die Pipeline `src/fadelive/pipeline_config.py` mit drei unterschiedlichen Konfigurationen ausgeführt werden:
-
-- `config/fadelive_v1.toml` mit `ocr_post-correction_dictionary_v1.txt`, `resources/replacements_v1.json`, `resources/stopwords_v1.txt`
-
-- `config/fadelive_v2.toml` mit `ocr_post-correction_dictionary_v2.txt`, `resources/replacements_v2.json`, `resources/stopwords_v1.txt`
-
-- `config/fadelive_v3.toml` mit `ocr_post-correction_dictionary_v2.txt`, `resources/replacements_v3.json`, `resources/stopwords_v2.txt`
-
-Das Korpus, das mit `config/fadelive_v3.toml` vorverarbeitet wird, ist die Version, in der die Verarbeitung des Vokabulars am besten normalisiert ist und Fehler bei der Ersetzung und der Entfernung von Stoppwörtern beseitigt wurden. 
-
-Die mit `config/fadelive_v1.toml` erzeugten Ausgaben des ersten Experiments `fadelive_exp_v1` finden sich in <https://doi.org/10.25625/APN9VH>.
-
-Die `.toml`-Konfigurationen können individuell angepasst werden. Dafür sind entsprechende Dummy-Dateien in `resources/` vorhanden.
-
-Neben den unterschiedlichen Pipeline-Konfigurationen gibt es eine allgemeine Pipeline, die genauso wie die Konfigurationen angepasst werden kann: `src/fadelive/pipeline/`.
-<br><br>
-#### Start der Pipelines
-Start einer konfigurierten Pipeline `fadelive_v3.toml` mit `src/fadelive/pipeline_config.py` im Terminal des Ordners von _fadelive_:<br> 
-```
-python -m fadelive.pipeline_config --config config/fadelive_v3.toml`
-```
-Start der Pipeline `src/fadelive/pipeline` im Terminal des Ordners von _fadelive_:<br>
-```
-python -m fadelive.main
-```
 <br><br>
 ### Modul 2: Ausgabe des Vokabulars in einer beliebigen Verarbeitungsstufe
 
@@ -230,12 +230,12 @@ Innerhalb dieser Entwicklung wurden die drei Master-Termsets _Begriffe_, _Gegens
 <br><br>
 ### Modul 4: Skripte für Visualisierungen und Erkundung des Korpus in einem GUI-Tool
 
-Mit den beiden rudimentären GUI-Tools `src/tools_visualisations/gui_corpus-explorer.py` und`src/tools_visualisations/gui_tag-topic-explorer.py` können das Korpus erkundet und einzelne Daten erzeugt werden.
+Mit den beiden rudimentären GUI-Tools `src/tools_visualisations/gui_corpus_explorer.py` und`src/tools_visualisations/gui_tag_topic_explorer.py` können das Korpus erkundet und einzelne Daten erzeugt werden.
 
 #### Korpus-Explorer
 Der Korpus-Explorer ermöglicht gängige korpusanalytische Abfragen. Mit den Ausgaben aus der Verarbeitung des Korpus mit der Pipeline und mit einem Termset aus `resourcen/termsets` und einem Topic-Modell aus `resourcen/topic-models` sind alle Abfragen möglich. Alle Dateien sind voreingestellt und können geändert werden. 
 
-`gui_corpus-explorer.py` benötigt
+`gui_corpus_explorer.py` benötigt
 - Document-Term-Matrix:`output/dtm_tfidf_stop/dtm_minfreq6.csv`
 - Document-Topic-Verteilung: `resources/topic-models/topics_v3/document-topics-distribution_tag.csv`
 - Metadaten der Texte: `data/raw/metadata.csv`
@@ -273,12 +273,12 @@ Neben dem Tab *Daten* gibt es vier Kategorien mit Abfragen und Visualisierungen:
    - diachrone Topicverläufe an ausgewählten Topics (Visualisierung)
 
    ***Texte***
-   - interaktive Clusterdiagramme der Texte (VIsualisierung)
+   - interaktive Clusterdiagramme der Texte (Visualisierung)
 
-#### Tag-Topic-Explorer
-Der Tag-Topic-Explorer visualisiert die Topics diachron und die Tag-Topic-Verhältnisse sowohl synchron als auch diachron. Für die Abfragen werden die Verarbeitungen aus Modul 3 benötigt. Die Tag-Topic-Verhältnisse ermöglichen eine auf das jeweilige Termset relativierte Abfrage der Topics. Alle benötigten Dateien sind auf den Arbeitsordner voreingestellt und können geändert werden. 
+#### tag_topic_explorer
+Der tag_topic_explorer visualisiert die Topics diachron und die Tag-Topic-Verhältnisse sowohl synchron als auch diachron. Für die Abfragen werden die Verarbeitungen aus Modul 3 benötigt. Die Tag-Topic-Verhältnisse ermöglichen eine auf das jeweilige Termset relativierte Abfrage der Topics. Alle benötigten Dateien sind auf den Arbeitsordner voreingestellt und können geändert werden. 
 
-`gui_tag-topic-explorer.py` benötigt
+`gui_tag_topic_explorer.py` benötigt
 - Termset als Pivot-Tabelle: `resources\termsets\Termset_Begriffe_2.3.csv`
 - Top-100-Topics-Word-Matrix: `resources\topic-models\topics_v3\fadelive_mallet_stop_topic_words_100_words_tag.csv`
 - tfidf-Matrix: `output\dtm_tfidf_stop\tfidf-2000.csv`
@@ -419,7 +419,7 @@ fadelive
     │       single_texts_for_tm.py
     │
     └───tools_visualisations
-            gui_corpus-explorer.py
+            gui_corpus_explorer.py
             gui_tag-topics-explorer.py
             statistics.py
 ```

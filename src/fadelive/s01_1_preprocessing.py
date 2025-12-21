@@ -3,15 +3,11 @@
 """
 Preprocessing-Script für einen Korpus im CSV/TSV-Format.
 
-ÄNDERUNG v2:
-- Korpus-CSVs (korpus_min.csv, korpus_lem.csv, korpus_stop.csv) enthalten
-  NUR die verarbeitete Content-Spalte (content_min, content_lem, content_stop)
-- Original-Content wird NICHT gespeichert
-- Alle Metadaten bleiben erhalten
-
-BUGFIX v2.1:
-- identify_metadata_columns schließt nun ALLE Content-Spalten aus (content, min, lem, stop)
-- Verhindert, dass mehrere Content-Spalten in den Output gelangen
+ÄNDERUNG v3:
+- Automatische Delimiter-Erkennung (Fallback: ";")
+- Automatische Metadaten-Erkennung
+- Flexible ID-Spalten-Erkennung
+- Ausgabe verwendet erkannten Delimiter
 
 Funktionen:
 - Einlesen einer Datei mit Spalte `content` (und optionalen Metadaten)
@@ -26,13 +22,13 @@ Funktionen:
 
 Beispielaufruf:
 
-    python s01_1_preprocessing_v2.py \
-        --input data/raw/korpus.csv \
-        --output-dir output/processed_corpus \
-        --delimiter ";" \
-        --replacements resources/replacements_v1.json \
-        --stopwords resources/stopwords_v1.txt \
-        --salat resources/ocr_post-correction_dictionary_v1.txt \
+    python s01_1_preprocessing.py \\
+        --input data/raw/korpus.csv \\
+        --output-dir output/processed_corpus \\
+        --delimiter auto \\
+        --replacements resources/replacements_v1.json \\
+        --stopwords resources/stopwords_v1.txt \\
+        --salat resources/ocr_post-correction_dictionary_v1.txt \\
         --hanta-model morphmodel_ger.pgz
 """
 
@@ -41,10 +37,24 @@ import json
 import re
 import string
 from pathlib import Path
-from typing import Dict, Set, Tuple, List
+from typing import Dict, Set, Tuple, List, Optional
 
 import pandas as pd
 from HanTa import HanoverTagger as ht
+
+# Import der gemeinsamen Utils
+try:
+    from .pipeline_utils import (
+        detect_delimiter, read_csv_auto,
+        identify_content_column, identify_metadata_columns,
+        identify_id_column, has_column, safe_filename
+    )
+except ImportError:
+    from pipeline_utils import (
+        detect_delimiter, read_csv_auto,
+        identify_content_column, identify_metadata_columns,
+        identify_id_column, has_column, safe_filename
+    )
 
 
 # ---------------------------------------------------------
@@ -93,7 +103,7 @@ def apply_replacements(text: str, replacements: dict) -> str:
     return text
 
 
-EXTENDED_PUNCTUATION = string.punctuation + "»«„§‹›—''⸗■"
+EXTENDED_PUNCTUATION = string.punctuation + "»«â€ž§â€¹â€º—''â¸—â– "
 
 
 def remove_punctuation(text: str) -> str:
@@ -156,67 +166,43 @@ def preprocess_text(
 
 
 # ---------------------------------------------------------
-# Metadaten-Erkennung (KORRIGIERT v2.1)
+# Speichern der Korpusvarianten
 # ---------------------------------------------------------
 
-def identify_metadata_columns(df: pd.DataFrame) -> List[str]:
-    """
-    Identifiziert alle Metadaten-Spalten (= alles außer Content-Spalten).
-    
-    BUGFIX v2.1:
-    - Schließt ALLE Content-Spalten aus: 'content', 'min', 'lem', 'stop'
-    - Verhindert, dass verarbeitete Content-Spalten in Metadaten landen
-    
-    Returns:
-        Liste der Metadaten-Spaltennamen
-    """
-    # ALLE Content-Spalten ausschließen
-    content_columns = {"content", "min", "lem", "stop"}
-    return [col for col in df.columns if col not in content_columns]
-
-
-# ---------------------------------------------------------
-# Speichern der Korpusvarianten (v2 - mit Bugfix)
-# ---------------------------------------------------------
-
-def save_corpus_variants(df: pd.DataFrame, out_dir: Path, delimiter: str) -> None:
+def save_corpus_variants(
+    df: pd.DataFrame, 
+    out_dir: Path, 
+    delimiter: str,
+    original_metadata: List[str]
+) -> None:
     """
     Speichert die drei Korpusvarianten in getrennte Dateien.
     
-    ÄNDERUNG v2:
-    - Jede Datei enthält NUR die entsprechende verarbeitete Content-Spalte
-    - Original-Content wird NICHT gespeichert
-    - Spaltennamen: content_min, content_lem, content_stop
-    
-    BUGFIX v2.1:
-    - identify_metadata_columns schließt nun alle Content-Spalten aus
-    - Jede Datei enthält garantiert nur EINE Content-Spalte
+    Jede Datei enthält NUR die entsprechende verarbeitete Content-Spalte
+    plus alle Original-Metadaten.
     """
-    # Metadaten OHNE Content-Spalten (content, min, lem, stop)
-    metadata_cols = identify_metadata_columns(df)
+    print(f"   📋 Metadaten-Spalten: {len(original_metadata)}")
     
-    print(f"   📋 Metadaten-Spalten: {len(metadata_cols)} ({', '.join(metadata_cols[:5])}{'...' if len(metadata_cols) > 5 else ''})")
-    
-    # MIN: Metadaten + content_min (NUR diese eine Content-Spalte!)
-    out_df_min = df[metadata_cols + ["min"]].copy()
+    # MIN: Metadaten + content_min
+    out_df_min = df[original_metadata + ["min"]].copy()
     out_df_min = out_df_min.rename(columns={"min": "content_min"})
     out_path_min = out_dir / "korpus_min.csv"
     out_df_min.to_csv(out_path_min, sep=delimiter, encoding="utf-8", index=False)
-    print(f"   ✅ korpus_min.csv: {len(metadata_cols)} Metadaten + content_min")
+    print(f"   ✅ korpus_min.csv: {len(original_metadata)} Metadaten + content_min")
     
-    # LEM: Metadaten + content_lem (NUR diese eine Content-Spalte!)
-    out_df_lem = df[metadata_cols + ["lem"]].copy()
+    # LEM: Metadaten + content_lem
+    out_df_lem = df[original_metadata + ["lem"]].copy()
     out_df_lem = out_df_lem.rename(columns={"lem": "content_lem"})
     out_path_lem = out_dir / "korpus_lem.csv"
     out_df_lem.to_csv(out_path_lem, sep=delimiter, encoding="utf-8", index=False)
-    print(f"   ✅ korpus_lem.csv: {len(metadata_cols)} Metadaten + content_lem")
+    print(f"   ✅ korpus_lem.csv: {len(original_metadata)} Metadaten + content_lem")
     
-    # STOP: Metadaten + content_stop (NUR diese eine Content-Spalte!)
-    out_df_stop = df[metadata_cols + ["stop"]].copy()
+    # STOP: Metadaten + content_stop
+    out_df_stop = df[original_metadata + ["stop"]].copy()
     out_df_stop = out_df_stop.rename(columns={"stop": "content_stop"})
     out_path_stop = out_dir / "korpus_stop.csv"
     out_df_stop.to_csv(out_path_stop, sep=delimiter, encoding="utf-8", index=False)
-    print(f"   ✅ korpus_stop.csv: {len(metadata_cols)} Metadaten + content_stop")
+    print(f"   ✅ korpus_stop.csv: {len(original_metadata)} Metadaten + content_stop")
 
 
 # ---------------------------------------------------------
@@ -231,37 +217,63 @@ def run(
     stopwords_path: Path,
     salat_path: Path,
     hanta_model: str,
-) -> None:
-    """Führt die komplette Preprocessing-Pipeline aus."""
+) -> str:
+    """
+    Führt die komplette Preprocessing-Pipeline aus.
+    
+    Returns:
+        Verwendeter Delimiter (für Weitergabe an nächste Schritte)
+    """
     
     output_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"📄 Lade Korpus: {input_path}")
+    
+    # Automatische Delimiter-Erkennung
+    if delimiter == "auto":
+        delimiter = detect_delimiter(input_path)
+    
     df = pd.read_csv(input_path, sep=delimiter, encoding="utf-8")
 
-    if "content" not in df.columns:
-        raise ValueError("Die Eingabedatei muss eine Spalte 'content' enthalten.")
+    # Flexible Content-Spalten-Erkennung (content, text, body, etc.)
+    content_col = identify_content_column(df)
+    if content_col is None:
+        raise ValueError(
+            "Keine Content-Spalte gefunden. "
+            "Erwartet eine Spalte namens: content, text, clean_text, body, fulltext"
+        )
+    
+    # Falls nicht "content", umbenennen für konsistente Verarbeitung
+    if content_col != "content":
+        print(f"   ℹ️ Content-Spalte '{content_col}' wird als 'content' verwendet")
+        df = df.rename(columns={content_col: "content"})
 
     print(f"   📊 {len(df)} Dokumente geladen")
+    print(f"   🔍 Delimiter: {repr(delimiter)}")
 
     # Metadaten automatisch erkennen (vor Verarbeitung!)
     original_metadata = [col for col in df.columns if col != "content"]
     print(f"   📋 Erkannte Metadaten-Spalten: {len(original_metadata)}")
+    
+    # ID-Spalte identifizieren
+    id_col = identify_id_column(df)
+    if id_col:
+        print(f"   🔑 ID-Spalte: {id_col}")
 
-    print("\n📦 Lade Ressourcen …")
+    print("\n📦 Lade Ressourcen ...")
     replacements = load_replacements(replacements_path)
-    print(f"   ✓ Replacements: {len(replacements)} Regeln")
+    print(f"   ✔ Replacements: {len(replacements)} Regeln")
     
     stopwords = load_word_list(stopwords_path)
-    print(f"   ✓ Stopwords: {len(stopwords)} Wörter")
+    print(f"   ✔ Stopwords: {len(stopwords)} Wörter")
     
     salat = load_word_list(salat_path)
-    print(f"   ✓ OCR-Artefakte: {len(salat)} Einträge")
+    print(f"   ✔ OCR-Artefakte: {len(salat)} Einträge")
     
     lemmatizer = ht.HanoverTagger(hanta_model)
-    print(f"   ✓ HanTa-Modell: {hanta_model}")
+    print(f"   ✔ HanTa-Modell: {hanta_model}")
 
-    print("\n🔄 Starte Vorverarbeitung …")
+    print("\n📄 Starte Vorverarbeitung ...")
     min_list: List[str] = []
     lem_list: List[str] = []
     stop_list: List[str] = []
@@ -281,15 +293,15 @@ def run(
         lem_list.append(lem_t)
         stop_list.append(stop_t)
 
-    print(f"   Verarbeitet: {len(df)}/{len(df)} Dokumente ✓")
+    print(f"   Verarbeitet: {len(df)}/{len(df)} Dokumente ✔")
 
     # Verarbeitete Spalten zum DataFrame hinzufügen
     df["min"] = min_list
     df["lem"] = lem_list
     df["stop"] = stop_list
 
-    print("\n💾 Speichere Korpusvarianten …")
-    save_corpus_variants(df, output_dir, delimiter)
+    print("\n💾 Speichere Korpusvarianten ...")
+    save_corpus_variants(df, output_dir, delimiter, original_metadata)
 
     print("\n" + "="*60)
     print("✅ Preprocessing erfolgreich abgeschlossen!")
@@ -298,6 +310,9 @@ def run(
     print(f"   - korpus_min.csv ({len(original_metadata)} Metadaten + content_min)")
     print(f"   - korpus_lem.csv ({len(original_metadata)} Metadaten + content_lem)")
     print(f"   - korpus_stop.csv ({len(original_metadata)} Metadaten + content_stop)")
+    print(f"   - Delimiter: {repr(delimiter)}")
+    
+    return delimiter
 
 
 # ---------------------------------------------------------
@@ -309,21 +324,16 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
         description="Erzeugt drei Vorverarbeitungsvarianten eines Korpus aus CSV/TSV.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-ÄNDERUNG v2:
-  - Jede Output-Datei enthält NUR die entsprechende Content-Spalte
-  - korpus_min.csv: Metadaten + content_min
-  - korpus_lem.csv: Metadaten + content_lem
-  - korpus_stop.csv: Metadaten + content_stop
-
-BUGFIX v2.1:
-  - Verhindert, dass mehrere Content-Spalten in den Outputs landen
-  - Korrekte Metadaten-Erkennung
+ÄNDERUNG v3:
+  - Automatische Delimiter-Erkennung (--delimiter auto)
+  - Automatische Metadaten-Erkennung
+  - Flexible ID-Spalten-Erkennung
 
 Beispiel:
-  python s01_1_preprocessing_v2.py \\
+  python s01_1_preprocessing.py \\
       --input data/raw/korpus.csv \\
       --output-dir output/processed_corpus \\
-      --delimiter ";" \\
+      --delimiter auto \\
       --replacements resources/replacements_v1.json \\
       --stopwords resources/stopwords_v1.txt \\
       --salat resources/ocr_post-correction_dictionary_v1.txt \\
@@ -334,8 +344,8 @@ Beispiel:
                         help="Pfad zur Eingabedatei (CSV/TSV) mit Spalte 'content'.")
     parser.add_argument("--output-dir", type=Path, required=True,
                         help="Verzeichnis für Ausgabedateien.")
-    parser.add_argument("--delimiter", default="\t",
-                        help="Feldtrenner (Standard: Tab).")
+    parser.add_argument("--delimiter", default="auto",
+                        help="Feldtrenner ('auto' für automatische Erkennung, Standard: auto).")
     parser.add_argument("--replacements", type=Path, required=True,
                         help="JSON-Datei mit Ersetzungspaaren.")
     parser.add_argument("--stopwords", type=Path, required=True,

@@ -1,73 +1,116 @@
-[s01_1_preprocessing]
-input_path       = "data/raw/korpus.csv"
-output_dir       = "output/processed_corpus"
-delimiter        = ";"
+# =============================================================================
+# NLP-Pipeline - Konfiguration mit automatischer Erkennung
+# =============================================================================
+#
+# FEATURES:
+# - delimiter = "auto" → automatische Erkennung (Fallback: ";")
+# - Metadaten werden automatisch erkannt
+# - ID-Spalten werden flexibel erkannt (_id, id, doc_id, filename, etc.)
+# - Intervalle werden dynamisch aus den Jahresdaten generiert
+#
+# =============================================================================
+
+[step1_s01_1_preprocessing]
+input_path        = "data/raw/korpus.csv"
+output_dir        = "output/processed_corpus"
+delimiter         = "auto"  # "auto" = automatische Erkennung, oder ";", ",", "\t"
 replacements_path = "resources/replacements_v2.json"
 stopwords_path    = "resources/stopwords_v1.txt"
 salat_path        = "resources/ocr_post-correction_dictionary_v2.txt"
 hanta_model       = "morphmodel_ger.pgz"
 
-[s01_2_vocabular]
-input_dir  = "output/processed_corpus"
-output_dir = "output/vocabular"
-delimiter  = ";"
+[step2_s01_2_vocabular]
+input_dir     = "output/processed_corpus"
+output_dir    = "output/vocabular"
+delimiter     = "auto"  # Verwendet erkannten Delimiter von Step 1
+interval_size = 15      # Standard-Intervallgröße in Jahren (für dynamische Generierung)
 
-[s01_3_statistics]
+[step3_s01_3_statistics]
 preprocessed_dir = "output/processed_corpus"
 output_dir       = "output/statistics"
-delimiter        = ";"
+delimiter        = "auto"
 
-[s01_4_pos_tag]
+[step4_s01_4_pos_tag]
 input_json = "output/vocabular/vocab_full_stop.json"
 output_csv = "output/vocabular/vocab_top5000_stop_pos.csv"
 model      = "de_core_news_lg"
 limit      = 5000
 
 [step5_s02_preprocessing_gensim]
-input_path       = "output/processed_corpus/korpus_min.csv"
-output_path      = "output/processed_corpus/korpus_gen.csv"
-delimiter        = ";"
+input_path        = "output/processed_corpus/korpus_min.csv"
+output_path       = "output/processed_corpus/korpus_gen.csv"
+delimiter         = "auto"
 replacements_path = "resources/replacements_v2.json"
 stopwords_path    = "resources/stopwords_v1.txt"
 salat_path        = "resources/ocr_post-correction_dictionary.txt"
 hanta_model       = "morphmodel_ger.pgz"
+
 # Optional: Satzzeichen (. ! ?) als eigene Tokens entfernen
 # remove_sentence_punct = true
-# Optional: Zeitintervalle für separate Dateien (Format: "YYYY-YYYY")
-# Beispiel: intervals = ["1782-1852", "1853-1864", "1865-1876"]
-intervals = ["1782-1852", "1853-1864", "1865-1876"]
 
-[s03_dtm_tfidf]
+# Optional: Zeitintervalle für separate Dateien (Format: "YYYY-YYYY")
+# Wenn nicht angegeben, werden Intervalle dynamisch aus den Jahresdaten generiert
+# intervals = ["1782-1852", "1853-1864", "1865-1876"]
+
+[step6_s03_dtm_tfidf]
 input_path = "output/processed_corpus/korpus_stop.csv"
 output_dir = "output/dtm_tfidf_stop"
-sep        = ";"
+sep        = "auto"
 
-[s04_cosine]
+[step7_s04_cosine]
 input_path  = "output/dtm_tfidf_stop/tfidf-2000.csv"
 output_path = "output/cosine/cosine_tfidf2000.csv"
 
-[s05_dtm_tfidf_cos_intervals]
+[step8_s05_dtm_tfidf_cos_intervals]
 input_path = "output/processed_corpus/korpus_stop.csv"
 dtm_output = "output/intervals/dtm_tfidf_stop"
 cos_output = "output/intervals/cosine_stop"
-sep        = ";"
+sep        = "auto"
 
-[s06_tfidf_rank]
+[step9_s06_tfidf_rank]
 input_dir  = "output"
 output_dir = "output/tfidf_rank"
 top_n      = 2000
 
 [step10_s07_word_vector_model]
-input_dir = "output/processed_corpus"
+input_dir  = "output/processed_corpus"
 output_dir = "output/word2vec_models"
-pattern   = "korpus_gen*.csv"
-delimiter = ";"
+pattern    = "korpus_gen*.csv"
+delimiter  = "auto"
 # Hinweis: Parameter werden automatisch an Korpusgröße angepasst
 # - KLEIN   (<100k Tokens):  vector_size=100, window=3,  min_count=3
 # - MITTEL  (100k-1M):       vector_size=150, window=5,  min_count=8
 # - GROSS   (>1M):           vector_size=175, window=10, min_count=8
 # Intervall-Dateien (korpus_gen_YYYY-YYYY.csv) werden automatisch erkannt
 
-
 [run]
-steps = ["1","2","3","4","5","6","7","8","9","10"]  # optional: welche Schritte laufen
+# Welche Schritte sollen ausgeführt werden?
+# steps = ["1","2","3","4","5","6","7","8","9","10"]  # Alle Schritte
+steps = ["1","2","3","4","5","6","7","8","9","10"]  # Beispiel: Nur Preprocessing, Vokabular, Statistik
+
+# =============================================================================
+# HINWEISE:
+# =============================================================================
+#
+# 1. DELIMITER-ERKENNUNG:
+#    - "auto" erkennt automatisch: ";", ",", "\t", "|"
+#    - Fallback ist ";"
+#    - Erkannter Delimiter wird an alle nachfolgenden Schritte weitergegeben
+#
+# 2. METADATEN-ERKENNUNG:
+#    - Alle Spalten außer "content" werden als Metadaten behandelt
+#    - Keine feste Liste mehr nötig
+#
+# 3. ID-SPALTEN:
+#    - Automatisch erkannt: _id, id, doc_id, document_id, filename, file_id
+#
+# 4. JAHR-SPALTEN:
+#    - year_first hat Vorrang vor year
+#    - Automatisch erkannt: year_first, year, jahr, Jahr_final, etc.
+#
+# 5. INTERVALLE:
+#    - Werden dynamisch aus den Jahresdaten generiert
+#    - Standard-Intervallgröße: 15 Jahre (konfigurierbar)
+#    - Oder explizit angeben: intervals = ["1782-1852", "1853-1876"]
+#
+# =============================================================================

@@ -3,7 +3,8 @@
 """
 Vorverarbeitung eines Korpus für Gensim-Modelle (Word2Vec, LDA, etc.).
 
-ÄNDERUNG v2:
+ÄNDERUNG v3:
+- Automatische Delimiter-Erkennung (Fallback: ";")
 - Arbeitet mit neuen Content-Spaltennamen (content_min, content_lem, content_stop)
 - Flexible Metadaten-Handhabung: Alle Spalten außer Content werden beibehalten
 - Intervall-Unterstützung - Erzeugt separate Dateien pro Zeitintervall
@@ -28,28 +29,16 @@ Output:
     - korpus_gen.csv (Gesamtkorpus, Metadaten + content_gen)
     - korpus_gen_<interval>.csv (pro Intervall, nur Metadaten + content_gen)
 
-Beispielaufruf (Gesamtkorpus):
+Beispielaufruf:
 
-    python s02_preprocessing_gensim_v2.py \
-        --input output/processed_corpus/korpus_min.csv \
-        --output output/processed_corpus/korpus_gen.csv \
-        --delimiter ";" \
-        --replacements resources/replacements_v1.json \
-        --stopwords resources/stopwords_v1.txt \
-        --salat resources/ocr_post-correction_dictionary.txt \
+    python s02_preprocessing_gensim.py \\
+        --input output/processed_corpus/korpus_min.csv \\
+        --output output/processed_corpus/korpus_gen.csv \\
+        --delimiter auto \\
+        --replacements resources/replacements_v1.json \\
+        --stopwords resources/stopwords_v1.txt \\
+        --salat resources/ocr_post-correction_dictionary.txt \\
         --hanta-model resources/morphmodel_ger.pgz
-
-Beispielaufruf (mit Intervallen):
-
-    python s02_preprocessing_gensim_v2.py \
-        --input output/processed_corpus/korpus_min.csv \
-        --output output/processed_corpus/korpus_gen.csv \
-        --delimiter ";" \
-        --replacements resources/replacements_v1.json \
-        --stopwords resources/stopwords_v1.txt \
-        --salat resources/ocr_post-correction_dictionary.txt \
-        --hanta-model resources/morphmodel_ger.pgz \
-        --intervals "1784-1796" "1797-1810" "1811-1825"
 """
 
 import argparse
@@ -61,6 +50,26 @@ from typing import List, Tuple, Optional
 import pandas as pd
 from HanTa import HanoverTagger as ht
 
+# Import der gemeinsamen Utils
+try:
+    from .pipeline_utils import (
+        detect_delimiter,
+        identify_content_column,
+        identify_metadata_columns,
+        identify_year_columns,
+        get_year_series,
+        has_column
+    )
+except ImportError:
+    from pipeline_utils import (
+        detect_delimiter,
+        identify_content_column,
+        identify_metadata_columns,
+        identify_year_columns,
+        get_year_series,
+        has_column
+    )
+
 
 # ---------------------------------------------------------
 # Konfiguration / Parameter
@@ -70,35 +79,8 @@ from HanTa import HanoverTagger as ht
 ALLOWED_PUNCT = {".", "!", "?"}
 
 # Standardwerte (werden vom CLI überschrieben)
-DEFAULT_DELIMITER = "\t"
+DEFAULT_DELIMITER = "auto"
 DEFAULT_HANTA_MODEL = "morphmodel_ger.pgz"
-
-
-# ---------------------------------------------------------
-# Metadaten-Erkennung
-# ---------------------------------------------------------
-
-def identify_content_column(df: pd.DataFrame) -> str:
-    """
-    Identifiziert die Content-Spalte (content_min, content_lem oder content_stop).
-    
-    Returns:
-        Name der Content-Spalte
-    """
-    for col in ["content_min", "content_lem", "content_stop"]:
-        if col in df.columns:
-            return col
-    raise ValueError("Keine Content-Spalte gefunden (content_min/content_lem/content_stop)")
-
-
-def identify_metadata_columns(df: pd.DataFrame, content_col: str) -> list[str]:
-    """Identifiziert alle Metadaten-Spalten (= alles außer der Content-Spalte)."""
-    return [col for col in df.columns if col != content_col]
-
-
-def has_column(df: pd.DataFrame, col: str) -> bool:
-    """Prüft, ob eine Spalte existiert und nicht-leere Werte enthält."""
-    return col in df.columns and df[col].notna().any()
 
 
 # ---------------------------------------------------------
@@ -133,30 +115,16 @@ def filter_by_interval(df: pd.DataFrame, start_year: int, end_year: int) -> pd.D
     Filtert DataFrame nach Zeitintervall.
     year_first hat Vorrang vor year.
     
-    Args:
-        df: DataFrame mit year und/oder year_first Spalten
-        start_year: Beginn des Intervalls (inklusiv)
-        end_year: Ende des Intervalls (inklusiv)
-    
     Returns:
-        Gefiltertes DataFrame
+        Gefiltertes DataFrame oder leeres DataFrame wenn keine Jahr-Spalten vorhanden
     """
-    if not (has_column(df, "year") or has_column(df, "year_first")):
-        raise ValueError("Korpus enthält weder 'year' noch 'year_first'-Spalte. Intervalle können nicht angewendet werden.")
+    year_series = get_year_series(df)
     
-    df = df.copy()
+    if year_series is None:
+        print(f"   ⚠️ Keine Jahr-Spalten vorhanden, Intervall-Filterung übersprungen")
+        return pd.DataFrame()
     
-    # year_first hat Vorrang, sonst year
-    if "year_first" in df.columns:
-        year_col = df["year_first"].combine_first(df.get("year", pd.Series(dtype=float)))
-    else:
-        year_col = df["year"]
-    
-    # In numerisch konvertieren
-    year_col = pd.to_numeric(year_col, errors="coerce")
-    
-    # Filtern
-    mask = (year_col >= start_year) & (year_col <= end_year)
+    mask = (year_series >= start_year) & (year_series <= end_year)
     filtered = df[mask].copy()
     
     print(f"   📅 Intervall {start_year}-{end_year}: {len(filtered)} von {len(df)} Dokumenten gefunden")
@@ -226,11 +194,8 @@ def normalize_punctuation(text: str, keep: set[str] = ALLOWED_PUNCT) -> str:
     """
     Normalisiert Sonderzeichen:
       - alphanumerische Zeichen bleiben
-      - Satzzeichen in `keep` werden als eigene Tokens ausgegeben (mit Leerzeichen davor und danach)
+      - Satzzeichen in `keep` werden als eigene Tokens ausgegeben
       - alle anderen Zeichen werden zu Leerzeichen
-
-    Beispiel:
-        "Corona-Pandemie, 2020!" -> "Corona Pandemie 2020 !"
     """
     out = []
     for ch in text:
@@ -242,7 +207,6 @@ def normalize_punctuation(text: str, keep: set[str] = ALLOWED_PUNCT) -> str:
             out.append(" ")
 
     text = "".join(out)
-    # Mehrfach-Leerzeichen normalisieren
     return re.sub(r"\s+", " ", text).strip()
 
 
@@ -254,7 +218,6 @@ def remove_salat(text: str, salat: set) -> str:
 def lemmatize(text: str, tagger: ht.HanoverTagger) -> str:
     """
     Lemmatisiert mit HanTa.
-
     - Tokens, die genau ., ! oder ? sind, werden unverändert übernommen.
     - alle anderen Tokens werden mit HanTa lemmatisiert.
     """
@@ -263,11 +226,8 @@ def lemmatize(text: str, tagger: ht.HanoverTagger) -> str:
         if token in ALLOWED_PUNCT:
             out.append(token)
             continue
-
-        # normales Wort → HanTa
         lemma = tagger.analyze(token)[0].split("|")[0]
         out.append(lemma)
-
     return " ".join(out)
 
 
@@ -279,17 +239,11 @@ def remove_stopwords(text: str, stopwords: set) -> str:
             cleaned.append(token)
         elif token.lower() not in stopwords:
             cleaned.append(token)
-        # sonst: Stopwort → wird entfernt
     return " ".join(cleaned)
 
 
 def remove_sentence_punct(text: str, keep: set[str] | None = None) -> str:
-    """
-    Entfernt Satzzeichen (. ! ?) als eigene Tokens; optional können einige behalten werden.
-
-    keep:
-        Set von Satzzeichen, die NICHT entfernt werden sollen (z. B. {"?"})
-    """
+    """Entfernt Satzzeichen (. ! ?) als eigene Tokens."""
     if keep is None:
         keep = set()
 
@@ -318,25 +272,13 @@ def process_text(
     if not isinstance(text, str) or not text.strip():
         return ""
 
-    # 1) Lowercasing
     text = text.lower()
-
-    # 2) Ersetzungen
     text = apply_replacements(text, replacements)
-
-    # 3) Sonderzeichen normalisieren; . ! ? als eigene Tokens
     text = normalize_punctuation(text)
-
-    # 4) OCR-Salat entfernen
     text = remove_salat(text, salat)
-
-    # 5) Lemmatisierung
     text = lemmatize(text, lemmatizer)
-
-    # 6) Stopwörter entfernen
     text = remove_stopwords(text, stopwords)
 
-    # 7) Optional: Satzzeichen entfernen
     if not keep_sentence_punct:
         text = remove_sentence_punct(text)
 
@@ -350,21 +292,24 @@ def process_text(
 def run(
     input_path: Path,
     output_path: Path,
-    delimiter: str = "\t",
+    delimiter: str = "auto",
     replacements_path: Optional[Path] = None,
     stopwords_path: Optional[Path] = None,
     salat_path: Optional[Path] = None,
     hanta_model: str = DEFAULT_HANTA_MODEL,
     keep_sentence_punct: bool = True,
     intervals: Optional[List[str]] = None,
-) -> None:
+) -> str:
     """
     Hauptfunktion: Lädt Korpus, verarbeitet, speichert Ausgaben.
     
-    ÄNDERUNG v2:
-    - Erkennt automatisch Content-Spalte (content_min/content_lem/content_stop)
-    - Ausgabe enthält nur Metadaten + content_gen
+    Returns:
+        Verwendeter Delimiter
     """
+
+    # Delimiter erkennen
+    if delimiter == "auto":
+        delimiter = detect_delimiter(input_path)
 
     # 1) Korpus laden
     print(f"📄 Lade Korpus: {input_path}")
@@ -372,14 +317,16 @@ def run(
 
     # Content-Spalte identifizieren
     content_col = identify_content_column(df)
+    if content_col is None:
+        raise ValueError("Keine Content-Spalte gefunden")
     print(f"📋 Erkannte Content-Spalte: {content_col}")
 
     # Metadaten identifizieren
     metadata_cols = identify_metadata_columns(df, content_col)
-    print(f"📋 Erkannte Metadaten: {', '.join(metadata_cols)}")
+    print(f"📋 Erkannte Metadaten: {len(metadata_cols)} Spalten")
 
     # 2) Ressourcen laden
-    print("📦 Lade Ressourcen …")
+    print("📦 Lade Ressourcen ...")
     replacements = load_replacements(replacements_path)
     stopwords = load_list(stopwords_path)
     salat = load_list(salat_path)
@@ -390,12 +337,12 @@ def run(
     print(f"   ✔ {len(salat)} OCR-Artefakte")
 
     # 3) Verarbeitung
-    print(f"\n🔄 Verarbeite {len(df)} Dokumente …")
+    print(f"\n📄 Verarbeite {len(df)} Dokumente ...")
     
     processed_texts = []
     for idx, text in enumerate(df[content_col].astype(str), 1):
         if idx % 100 == 0:
-            print(f"   {idx}/{len(df)} …", end="\r")
+            print(f"   {idx}/{len(df)} ...", end="\r")
         
         proc = process_text(
             text,
@@ -418,7 +365,7 @@ def run(
 
     # 5) Intervalle (optional)
     if intervals:
-        print(f"\n📅 Verarbeite {len(intervals)} Intervalle …")
+        print(f"\n📅 Verarbeite {len(intervals)} Intervalle ...")
         
         output_dir = output_path.parent
         output_stem = output_path.stem
@@ -436,7 +383,7 @@ def run(
                 print(f"   ⚠️  Keine Dokumente für {interval_str} → übersprungen")
                 continue
             
-            # Nur gefilterte Dokumente verarbeiten
+            # Nur gefilterte Dokumente verwenden
             filtered_indices = df_filtered.index
             filtered_processed = [processed_texts[i] for i in filtered_indices]
             
@@ -448,6 +395,7 @@ def run(
             print(f"   ✔ Gespeichert: {interval_file.name} ({len(df_interval)} Dokumente)")
 
     print("\n✅ Verarbeitung abgeschlossen.")
+    return delimiter
 
 
 # ---------------------------------------------------------
@@ -456,7 +404,20 @@ def run(
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Gensim-Preprocessing eines Korpus (unterstützt Intervalle)"
+        description="Gensim-Preprocessing eines Korpus (unterstützt Intervalle)",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+ÄNDERUNG v3:
+  - Automatische Delimiter-Erkennung (--delimiter auto)
+  - Flexible Content-/Metadaten-Erkennung
+  - Konsistent mit Pipeline v3
+
+Beispiel:
+  python s02_preprocessing_gensim.py \\
+      --input output/processed_corpus/korpus_min.csv \\
+      --output output/processed_corpus/korpus_gen.csv \\
+      --delimiter auto
+        """
     )
     parser.add_argument(
         "--input",
@@ -473,7 +434,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--delimiter",
         default=DEFAULT_DELIMITER,
-        help=f"CSV-Delimiter (Standard: {DEFAULT_DELIMITER!r})",
+        help="CSV-Delimiter ('auto' für automatische Erkennung)",
     )
     parser.add_argument(
         "--replacements",

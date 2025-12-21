@@ -3,12 +3,11 @@
 """
 Berechnung einer Cosinus-Ähnlichkeitsmatrix auf Grundlage von TF-IDF/DTM-Matrizen.
 
-ÄNDERUNG v3 (Vollständige Flexibilisierung):
-- Verwendet standardisierte Metadaten-Erkennungsfunktionen aus dem Pipeline-System
+ÄNDERUNG v3:
+- Verwendet gemeinsame pipeline_utils für konsistente Erkennung
 - Erweiterte ID-Erkennung (doc_id > _id > id > filename)
-- Content-Spalten-Ausschluss (content_stop, content_lem, etc.)
-- Konsistent mit anderen v2/v3/v4-Modulen
-- Detaillierte Ausgabe über erkannte Spalten
+- Content-Spalten-Ausschluss
+- Konsistent mit Pipeline v3
 
 Input-Datei:
     output/dtm_tfidf_stop/tfidf-2000.csv (oder jede andere TF-IDF/DTM-Matrix)
@@ -16,16 +15,10 @@ Input-Datei:
 Output-Datei:
     output/cosine/cosine_tfidf2000.csv
 
-Dieses Script:
-    1) lädt die TF-IDF/DTM-Matrix
-    2) trennt Metadaten von Feature-Spalten (automatisch, standardisiert)
-    3) berechnet die Cosinus-Ähnlichkeitsmatrix
-    4) speichert die Cosinus-Matrix als CSV
-
 Beispielaufruf:
 
-    python s04_cosine_v3.py \
-        --input output/dtm_tfidf_stop/tfidf-2000.csv \
+    python s04_cosine.py \\
+        --input output/dtm_tfidf_stop/tfidf-2000.csv \\
         --output output/cosine/cosine_tfidf2000.csv
 """
 
@@ -36,9 +29,23 @@ from pathlib import Path
 from typing import Optional, List, Tuple
 from sklearn.metrics.pairwise import cosine_similarity
 
+# Import der gemeinsamen Utils
+try:
+    from .pipeline_utils import (
+        identify_content_column,
+        identify_id_column,
+        has_column
+    )
+except ImportError:
+    from pipeline_utils import (
+        identify_content_column,
+        identify_id_column,
+        has_column
+    )
+
 
 # =============================================================================
-# FLEXIBLE METADATEN-ERKENNUNG (standardisiert)
+# FLEXIBLE METADATEN-ERKENNUNG
 # =============================================================================
 
 KNOWN_METADATA_NAMES = {
@@ -57,47 +64,6 @@ KNOWN_METADATA_NAMES = {
 }
 
 
-def identify_content_column(df: pd.DataFrame) -> Optional[str]:
-    """
-    Identifiziert die Content-Spalte flexibel.
-    
-    Priorität: content_gen > content_stop > content_lem > content_min > content > text > clean_text
-    """
-    candidates = [
-        "content_gen", "content_stop", "content_lem", "content_min",
-        "content", "text", "clean_text"
-    ]
-    lower_map = {str(c).lower(): c for c in df.columns}
-    
-    for cand in candidates:
-        if cand in df.columns:
-            return cand
-        lc = str(cand).lower()
-        if lc in lower_map:
-            return lower_map[lc]
-    
-    return None
-
-
-def identify_doc_id_column(df: pd.DataFrame) -> Optional[str]:
-    """
-    Identifiziert die Dokument-ID-Spalte flexibel.
-    
-    Priorität: doc_id > _id > id > filename
-    """
-    candidates = ["doc_id", "_id", "id", "filename"]
-    lower_map = {str(c).lower(): c for c in df.columns}
-    
-    for cand in candidates:
-        if cand in df.columns and df[cand].notna().any():
-            return cand
-        lc = str(cand).lower()
-        if lc in lower_map and df[lower_map[lc]].notna().any():
-            return lower_map[lc]
-    
-    return None
-
-
 def is_metadata_column(col_name: str) -> bool:
     """Prüft, ob eine Spalte eine Metadaten-Spalte ist."""
     col_lower = str(col_name).strip().lower()
@@ -109,46 +75,25 @@ def is_metadata_column(col_name: str) -> bool:
 def identify_feature_columns(df: pd.DataFrame, exclude_content: bool = True) -> List[str]:
     """
     Identifiziert Feature-Spalten (= numerische Spalten, die KEINE Metadaten sind).
-    
-    Args:
-        df: DataFrame
-        exclude_content: Wenn True, werden Content-Spalten ausgeschlossen
-    
-    Returns:
-        Liste der Feature-Spalten
     """
     feature_cols = []
     content_col = identify_content_column(df) if exclude_content else None
     
     for col in df.columns:
-        # Content-Spalte ausschließen
         if content_col and col == content_col:
             continue
-        # Bekannte Metadaten ausschließen
         if is_metadata_column(col):
             continue
-        # Nur numerische Spalten
         if pd.api.types.is_numeric_dtype(df[col]):
             feature_cols.append(col)
     
     return feature_cols
 
 
-def identify_metadata_columns(df: pd.DataFrame) -> List[str]:
-    """
-    Identifiziert Metadaten-Spalten (alle nicht-Feature-Spalten).
-    
-    Returns:
-        Liste der Metadaten-Spalten
-    """
+def identify_metadata_columns_cosine(df: pd.DataFrame) -> List[str]:
+    """Identifiziert Metadaten-Spalten (alle nicht-Feature-Spalten)."""
     feature_cols = set(identify_feature_columns(df, exclude_content=True))
-    metadata_cols = []
-    
-    for col in df.columns:
-        if col not in feature_cols:
-            metadata_cols.append(col)
-    
-    return metadata_cols
+    return [col for col in df.columns if col not in feature_cols]
 
 
 # =============================================================================
@@ -157,31 +102,31 @@ def identify_metadata_columns(df: pd.DataFrame) -> List[str]:
 
 def load_tfidf_matrix(path: Path) -> Tuple[pd.DataFrame, List[str], List[str]]:
     """
-    Lädt TF-IDF/DTM-Matrix und trennt Metadaten von Feature-Spalten (standardisiert).
+    Lädt TF-IDF/DTM-Matrix und trennt Metadaten von Feature-Spalten.
     
     Returns:
         (df, metadata_columns, feature_columns)
     """
     if not path.exists():
-        raise FileNotFoundError(f"❌ Datei nicht gefunden: {path}")
+        raise FileNotFoundError(f"âŒ Datei nicht gefunden: {path}")
 
     print(f"📄 Lade Datei: {path}")
     df = pd.read_csv(path, encoding="utf-8")
     
-    # Automatische Trennung (standardisiert)
-    meta_cols = identify_metadata_columns(df)
+    # Automatische Trennung
+    meta_cols = identify_metadata_columns_cosine(df)
     feature_cols = identify_feature_columns(df, exclude_content=True)
     
     if not feature_cols:
-        raise ValueError("❌ Keine Feature-Spalten gefunden.")
+        raise ValueError("âŒ Keine Feature-Spalten gefunden.")
     
-    # Content-Spalte erkennen (falls vorhanden, sollte aber nicht in TF-IDF sein)
+    # Content-Spalte erkennen (falls vorhanden)
     content_col = identify_content_column(df)
     if content_col:
         print(f"   ⚠️ Warnung: Content-Spalte '{content_col}' in Matrix gefunden (wird ignoriert)")
     
     # ID-Spalte erkennen
-    id_col = identify_doc_id_column(df)
+    id_col = identify_id_column(df)
     if id_col:
         print(f"   🔑 ID-Spalte: {id_col}")
     
@@ -197,14 +142,13 @@ def load_tfidf_matrix(path: Path) -> Tuple[pd.DataFrame, List[str], List[str]]:
 
 def compute_cosine(df_features: pd.DataFrame) -> pd.DataFrame:
     """Berechnet die Cosinus-Ähnlichkeitsmatrix."""
-    # Sicherheit: falls vorher doch irgendwo NaN geblieben ist
     if df_features.isna().values.any():
-        raise ValueError("❌ Nach Bereinigung sind noch NaN in den Features vorhanden.")
+        raise ValueError("âŒ Nach Bereinigung sind noch NaN in den Features vorhanden.")
 
     matrix = df_features.to_numpy(dtype=float)
 
     if matrix.size == 0:
-        raise ValueError("❌ Die Matrix enthält keine Daten.")
+        raise ValueError("âŒ Die Matrix enthält keine Daten.")
 
     print(f"   🔢 Matrix-Größe: {matrix.shape[0]} Dokumente × {matrix.shape[1]} Features")
     
@@ -228,17 +172,17 @@ def run(
     
     df, meta_cols, feature_cols = load_tfidf_matrix(input_path)
 
-    # Dokument-IDs bestimmen (standardisiert)
-    id_col = identify_doc_id_column(df)
+    # Dokument-IDs bestimmen
+    id_col = identify_id_column(df)
     
     if id_col:
         doc_ids = df[id_col].fillna("").astype(str).tolist()
-        print(f"   🆔 Verwende '{id_col}' als Dokument-ID")
+        print(f"   📍 Verwende '{id_col}' als Dokument-ID")
     else:
         doc_ids = [f"doc_{i}" for i in range(len(df))]
-        print(f"   🆔 Keine ID-Spalte gefunden, verwende generierte IDs (doc_0, doc_1, ...)")
+        print(f"   📍 Keine ID-Spalte gefunden, verwende generierte IDs")
 
-    print("\n➡ Berechne Cosinus-Ähnlichkeit …")
+    print("\n➡ Berechne Cosinus-Ähnlichkeit ...")
     df_cos = compute_cosine(df[feature_cols])
 
     # Spalten und Index beschriften
@@ -263,22 +207,15 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         description="Berechnet eine Cosinusmatrix aus TF-IDF/DTM-CSV.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-FLEXIBILISIERUNG v3:
-  - Automatische Content-Spalten-Erkennung (werden ausgeschlossen)
+ÄNDERUNG v3:
+  - Verwendet gemeinsame pipeline_utils
   - Erweiterte ID-Erkennung (doc_id > _id > id > filename)
-  - Flexible Feature-Erkennung (numerisch, keine Metadaten)
-  - Konsistent mit anderen Pipeline-Modulen
+  - Konsistent mit Pipeline v3
 
 Beispiele:
-  # TF-IDF-Matrix
-  python s04_cosine_v3.py \\
+  python s04_cosine.py \\
       --input output/dtm_tfidf_stop/tfidf-2000.csv \\
       --output output/cosine/cosine_tfidf2000.csv
-  
-  # DTM-Matrix
-  python s04_cosine_v3.py \\
-      --input output/dtm_tfidf_stop/dtm-2000.csv \\
-      --output output/cosine/cosine_dtm2000.csv
         """
     )
     parser.add_argument(

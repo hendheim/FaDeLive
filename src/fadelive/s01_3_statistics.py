@@ -3,17 +3,12 @@
 """
 Statistik-Pipeline für den Korpus.
 
-ÄNDERUNG v3 (Vollständige Flexibilisierung):
-- Automatische Content-Spalten-Erkennung (content_min, content_lem, content_stop, content)
-- Verwendet standardisierte Metadaten-Erkennungsfunktionen
+ÄNDERUNG v3:
+- Automatische Delimiter-Erkennung (Fallback: ";")
+- Automatische Content-Spalten-Erkennung (content_min, content_lem, content_stop)
 - Flexible Jahr-Erkennung (year_first, year, Jahr_final, jahr)
 - Flexible ID-Erkennung (doc_id, _id, id, filename)
-- Konsistent mit Pipeline v2-Outputs
-
-**WICHTIG:** Pipeline v2-Änderung bei Content-Spalten:
-- korpus_min.csv enthält: Metadaten + content_min (NICHT "content"!)
-- korpus_lem.csv enthält: Metadaten + content_lem
-- korpus_stop.csv enthält: Metadaten + content_stop
+- Konsistent mit Pipeline v3
 
 Eingabe:
     output/processed_corpus/korpus_min.csv (mit content_min)
@@ -21,30 +16,14 @@ Eingabe:
     output/processed_corpus/korpus_stop.csv (mit content_stop)
 
 Ausgabe:
-    CSV-Dateien in output/statistics/, je nach vorhandenen Metadaten:
-        author_statistics.csv (falls author_surname vorhanden)
-        tokens.csv
-        tokens_per_textclass.csv (falls textclass vorhanden)
-        textclass_count.csv (falls textclass vorhanden)
-        documents_count.csv
-        address.csv (falls address vorhanden)
-        author_address.csv (falls author_address vorhanden)
-        source.csv (falls source vorhanden)
-        genre.csv (falls genre vorhanden)
-        year_count_tokens.csv (falls year/year_first vorhanden)
-        genre_per_source.csv (falls beide vorhanden)
-        tokens_per_author.csv (falls author_surname vorhanden)
-        tokens_per_genre.csv (falls genre vorhanden)
-        tokens_per_document_stop.csv
-        rezensierte_autoren.csv (falls genre und title vorhanden)
-        milestones.csv (falls year/year_first vorhanden)
+    CSV-Dateien in output/statistics/, je nach vorhandenen Metadaten
 
 Beispielaufruf:
 
-    python s01_3_statistics_v3.py \
-        --preprocessed-dir output/processed_corpus \
-        --output-dir output/statistics \
-        --delimiter ";"
+    python s01_3_statistics.py \\
+        --preprocessed-dir output/processed_corpus \\
+        --output-dir output/statistics \\
+        --delimiter auto
 """
 
 import argparse
@@ -59,106 +38,23 @@ import numpy as np
 import pandas as pd
 from nltk.tokenize import word_tokenize
 
-
-# =============================================================================
-# FLEXIBLE METADATEN-ERKENNUNG (standardisiert)
-# =============================================================================
-
-KNOWN_METADATA_NAMES = {
-    "_id", "id", "doc_id", "filename",
-    "author", "author_prename", "author_surname", "author_surname_norm", "author_address", "author_address_geo",
-    "editor_prename", "editor_surname",
-    "title", "title_norm", "title_addition",
-    "source", "journal", "magazine",
-    "year", "year_first", "year_final", "Jahr_final",
-    "volume", "edition", "issue", "pages", "pages_exzerpt",
-    "textclass", "genre", "address", "address_geo",
-    "lang", "language", "note", "archive",
-    "female_education",
-}
-
-
-def identify_content_column(df: pd.DataFrame) -> Optional[str]:
-    """
-    Identifiziert die Content-Spalte flexibel.
-    
-    Priorität: content_stop > content_lem > content_min > content_gen > content > text > clean_text
-    """
-    candidates = [
-        "content_stop", "content_lem", "content_min", "content_gen",
-        "content", "text", "clean_text"
-    ]
-    lower_map = {str(c).lower(): c for c in df.columns}
-    
-    for cand in candidates:
-        if cand in df.columns:
-            return cand
-        lc = str(cand).lower()
-        if lc in lower_map:
-            return lower_map[lc]
-    
-    return None
-
-
-def identify_year_columns(df: pd.DataFrame) -> Tuple[Optional[str], Optional[str]]:
-    """
-    Identifiziert Jahr-Spalten flexibel.
-    
-    Returns:
-        (year_first_column, year_column)
-    """
-    year_first_candidates = ["year_first", "Jahr_first"]
-    year_candidates = ["year", "jahr", "Jahr", "year_final", "Jahr_final"]
-    
-    lower_map = {str(c).lower(): c for c in df.columns}
-    
-    year_first = None
-    for cand in year_first_candidates:
-        if cand in df.columns:
-            year_first = cand
-            break
-        lc = str(cand).lower()
-        if lc in lower_map:
-            year_first = lower_map[lc]
-            break
-    
-    year = None
-    for cand in year_candidates:
-        if cand in df.columns:
-            year = cand
-            break
-        lc = str(cand).lower()
-        if lc in lower_map:
-            year = lower_map[lc]
-            break
-    
-    return year_first, year
-
-
-def coalesce_years(df: pd.DataFrame) -> pd.DataFrame:
-    """Erstellt year_final aus year_first/year (flexibel)."""
-    year_first_col, year_col = identify_year_columns(df)
-    to_num = lambda s: pd.to_numeric(s, errors="coerce")
-    yf = to_num(df[year_first_col]) if year_first_col and year_first_col in df.columns else pd.Series(index=df.index, dtype="float64")
-    y  = to_num(df[year_col]) if year_col and year_col in df.columns else pd.Series(index=df.index, dtype="float64")
-    df["year_final"] = yf.where(~yf.isna(), y)
-    return df
-
-
-def identify_metadata_columns(df: pd.DataFrame) -> List[str]:
-    """
-    Identifiziert alle Metadaten-Spalten (= alles außer Content).
-    
-    Returns:
-        Liste der Metadaten-Spalten
-    """
-    content_col = identify_content_column(df)
-    return [col for col in df.columns if col != content_col]
-
-
-def has_column(df: pd.DataFrame, col: str) -> bool:
-    """Prüft, ob eine Spalte existiert und nicht-leere Werte enthält."""
-    return col in df.columns and df[col].notna().any()
+# Import der gemeinsamen Utils
+try:
+    from .pipeline_utils import (
+        detect_delimiter, read_csv_auto,
+        identify_content_column, identify_content_column_strict,
+        identify_metadata_columns, identify_id_column,
+        identify_year_columns, get_year_series, coalesce_years,
+        has_column, safe_filename
+    )
+except ImportError:
+    from pipeline_utils import (
+        detect_delimiter, read_csv_auto,
+        identify_content_column, identify_content_column_strict,
+        identify_metadata_columns, identify_id_column,
+        identify_year_columns, get_year_series, coalesce_years,
+        has_column, safe_filename
+    )
 
 
 # =============================================================================
@@ -181,27 +77,34 @@ def count_tokens(text: str) -> int:
 
 
 # =============================================================================
-# Laden der Korpora (FLEXIBILISIERT)
+# Laden der Korpora
 # =============================================================================
 
-def load_corpus_files(preprocessed_dir: Path, delimiter: str = "\t") -> dict:
+def load_corpus_files(preprocessed_dir: Path, delimiter: str = "auto") -> Tuple[dict, str]:
     """
     Lädt korpus_min/lem/stop.csv, falls vorhanden.
     
-    **WICHTIG:** Erkennt automatisch Content-Spalten:
-    - korpus_min.csv → content_min
-    - korpus_lem.csv → content_lem
-    - korpus_stop.csv → content_stop
-
+    Args:
+        preprocessed_dir: Ordner mit den Korpus-Dateien
+        delimiter: CSV-Delimiter ("auto" für automatische Erkennung)
+    
     Returns:
-        dict: {"min": (df_min, content_col), "lem": (df_lem, content_col), "stop": (df_stop, content_col)}
+        (dict: {"min": (df, content_col), ...}, verwendeter_delimiter)
     """
     corpora = {}
+    detected_delimiter = None
+    
     for variant in ("min", "lem", "stop"):
         path = preprocessed_dir / f"korpus_{variant}.csv"
         if path.exists():
             print(f"   📄 Lade {path.name}")
-            df = pd.read_csv(path, sep=delimiter, encoding="utf-8")
+            
+            # Delimiter nur einmal erkennen
+            if delimiter == "auto" and detected_delimiter is None:
+                detected_delimiter = detect_delimiter(path)
+            
+            use_delimiter = detected_delimiter if delimiter == "auto" else delimiter
+            df = pd.read_csv(path, sep=use_delimiter, encoding="utf-8")
             
             # Content-Spalte automatisch erkennen
             content_col = identify_content_column(df)
@@ -209,13 +112,13 @@ def load_corpus_files(preprocessed_dir: Path, delimiter: str = "\t") -> dict:
                 print(f"      ⚠️ Keine Content-Spalte gefunden in {path.name}, übersprungen.")
                 continue
             
-            print(f"      ✓ Content-Spalte: {content_col}")
+            print(f"      ✔ Content-Spalte: {content_col}")
             
             # Jahr-Spalten zusammenführen (falls vorhanden)
             year_first, year = identify_year_columns(df)
             if year_first or year:
                 df = coalesce_years(df)
-                print(f"      ✓ Jahr-Spalten: year_first={year_first or '—'}, year={year or '—'} → year_final")
+                print(f"      ✔ Jahr-Spalten: year_first={year_first or '—'}, year={year or '—'} → year_final")
             
             corpora[variant] = (df, content_col)
         else:
@@ -224,17 +127,18 @@ def load_corpus_files(preprocessed_dir: Path, delimiter: str = "\t") -> dict:
     if not corpora:
         raise FileNotFoundError(f"Keine korpus_*.csv in {preprocessed_dir} gefunden.")
     
-    return corpora
+    final_delimiter = detected_delimiter if detected_delimiter else delimiter
+    return corpora, final_delimiter
 
 
 # =============================================================================
-# Statistik-Funktionen (ANGEPASST für flexible Content-Spalten)
+# Statistik-Funktionen
 # =============================================================================
 
 def compute_author_statistics(df_meta: pd.DataFrame, out_dir: Path):
     """Erstellt Author-Statistiken (falls author_surname vorhanden)."""
     if not has_column(df_meta, "author_surname"):
-        print("   ⏭️ Keine 'author_surname' → author_statistics.csv übersprungen.")
+        print("   ⚠️ Keine 'author_surname' → author_statistics.csv übersprungen.")
         return
         
     df = df_meta.copy()
@@ -251,19 +155,14 @@ def compute_author_statistics(df_meta: pd.DataFrame, out_dir: Path):
 
 
 def compute_token_statistics(corpora: dict, out_dir: Path):
-    """
-    Berechnet Token-Statistiken über alle Varianten.
-    
-    **WICHTIG:** Verwendet die erkannte Content-Spalte für jede Variante!
-    """
+    """Berechnet Token-Statistiken über alle Varianten."""
     tokens_rows = []
     tokens_per_tc_rows = []
 
     for variant, (df, content_col) in corpora.items():
-        variant_name = variant  # "min", "lem", "stop"
+        variant_name = variant
         df = df.copy()
 
-        # Token zählen aus der FLEXIBLEN Content-Spalte!
         df["__tokens"] = df[content_col].astype(str).apply(count_tokens)
 
         total_tokens = int(df["__tokens"].sum())
@@ -296,7 +195,7 @@ def compute_token_statistics(corpora: dict, out_dir: Path):
         )
         print(f"   ✅ tokens_per_textclass.csv")
     else:
-        print("   ⏭️ Keine 'textclass' → tokens_per_textclass.csv übersprungen.")
+        print("   ⚠️️ Keine 'textclass' → tokens_per_textclass.csv übersprungen.")
 
 
 def compute_textclass_and_documents(df_meta: pd.DataFrame, out_dir: Path):
@@ -315,13 +214,13 @@ def compute_textclass_and_documents(df_meta: pd.DataFrame, out_dir: Path):
         df_tc.to_csv(out_dir / "textclass_count.csv", index=False, encoding="utf-8")
         print(f"   ✅ textclass_count.csv")
     else:
-        print("   ⏭️ Keine 'textclass' → textclass_count.csv übersprungen.")
+        print("   ⚠️ Keine 'textclass' → textclass_count.csv übersprungen.")
 
 
 def compute_categorical_counts(df_meta: pd.DataFrame, out_dir: Path, column: str, filename: str):
     """Helper: Zählt Werte in einer kategorialen Spalte."""
     if not has_column(df_meta, column):
-        print(f"   ⏭️ Keine '{column}' → {filename} übersprungen.")
+        print(f"   ⚠️­️ Keine '{column}' → {filename} übersprungen.")
         return
     
     df_counts = (
@@ -336,20 +235,14 @@ def compute_categorical_counts(df_meta: pd.DataFrame, out_dir: Path, column: str
 
 
 def compute_year_count_tokens(df_stop: pd.DataFrame, content_col: str, out_dir: Path):
-    """
-    Berechnet Token-Counts pro Jahr.
-    
-    **WICHTIG:** Verwendet flexible Jahr-Erkennung (year_final aus year_first/year).
-    """
-    # Jahr-Spalte verwenden (sollte bereits year_final sein)
+    """Berechnet Token-Counts pro Jahr."""
     year_col = "year_final" if "year_final" in df_stop.columns else None
     
     if year_col is None:
         year_first, year = identify_year_columns(df_stop)
         if not year_first and not year:
-            print("   ⏭️ Keine Jahr-Spalten → year_count_tokens.csv übersprungen.")
+            print("   ⚠️ Keine Jahr-Spalten → year_count_tokens.csv übersprungen.")
             return
-        # Falls year_final nicht existiert, erstellen
         df_stop = coalesce_years(df_stop)
         year_col = "year_final"
     
@@ -372,7 +265,7 @@ def compute_year_count_tokens(df_stop: pd.DataFrame, content_col: str, out_dir: 
 def compute_genre_per_source(df_meta: pd.DataFrame, out_dir: Path):
     """Erstellt Genre-pro-Source-Matrix."""
     if not (has_column(df_meta, "genre") and has_column(df_meta, "source")):
-        print("   ⏭️ Keine 'genre' und/oder 'source' → genre_per_source.csv übersprungen.")
+        print("   ⚠️ Keine 'genre' und/oder 'source' → genre_per_source.csv übersprungen.")
         return
     
     crosstab = pd.crosstab(df_meta["genre"], df_meta["source"])
@@ -384,7 +277,7 @@ def compute_genre_per_source(df_meta: pd.DataFrame, out_dir: Path):
 def compute_tokens_per_author(df_stop: pd.DataFrame, content_col: str, out_dir: Path):
     """Berechnet Tokens pro Author."""
     if not has_column(df_stop, "author_surname"):
-        print("   ⏭️ Keine 'author_surname' → tokens_per_author.csv übersprungen.")
+        print("   ⚠️ Keine 'author_surname' → tokens_per_author.csv übersprungen.")
         return
     
     df = df_stop.copy()
@@ -406,7 +299,7 @@ def compute_tokens_per_author(df_stop: pd.DataFrame, content_col: str, out_dir: 
 def compute_tokens_per_genre(df_stop: pd.DataFrame, content_col: str, out_dir: Path):
     """Berechnet Tokens pro Genre."""
     if not has_column(df_stop, "genre"):
-        print("   ⏭️ Keine 'genre' → tokens_per_genre.csv übersprungen.")
+        print("   ⚠️ Keine 'genre' → tokens_per_genre.csv übersprungen.")
         return
     
     df = df_stop.copy()
@@ -438,12 +331,9 @@ def compute_tokens_per_document(df_stop: pd.DataFrame, content_col: str, out_dir
         keep_cols.append("title")
     
     # ID-Spalte hinzufügen (flexibel)
-    id_col = None
-    for cand in ["doc_id", "_id", "id", "filename"]:
-        if has_column(df, cand):
-            id_col = cand
-            keep_cols.insert(0, id_col)
-            break
+    id_col = identify_id_column(df)
+    if id_col:
+        keep_cols.insert(0, id_col)
     
     df_tokens = df[keep_cols].copy()
     
@@ -455,14 +345,14 @@ def compute_tokens_per_document(df_stop: pd.DataFrame, content_col: str, out_dir
 def compute_rezensierte_autoren(df_meta: pd.DataFrame, out_dir: Path):
     """Extrahiert rezensierte Autoren aus Rezensions-Titeln."""
     if not (has_column(df_meta, "genre") and has_column(df_meta, "title")):
-        print("   ⏭️ Keine 'genre' und/oder 'title' → rezensierte_autoren.csv übersprungen.")
+        print("   ⚠️ Keine 'genre' und/oder 'title' → rezensierte_autoren.csv übersprungen.")
         return
     
     df = df_meta.copy()
     df = df[df["genre"].astype(str).str.lower().str.contains("rezension", na=False)]
     
     if df.empty:
-        print("   ⏭️ Keine Rezensionen gefunden → rezensierte_autoren.csv übersprungen.")
+        print("   ⚠️­️ Keine Rezensionen gefunden → rezensierte_autoren.csv übersprungen.")
         return
     
     pattern = r"^([A-ZÄÖÜ][a-zäöüß]+(?:\s+[A-ZÄÖÜ][a-zäöüß]+)?)"
@@ -483,7 +373,7 @@ def compute_milestones(df_meta: pd.DataFrame, out_dir: Path):
     if year_col is None:
         year_first, year = identify_year_columns(df_meta)
         if not year_first and not year:
-            print("   ⏭️ Keine Jahr-Spalten → milestones.csv übersprungen.")
+            print("   ⚠️ Keine Jahr-Spalten → milestones.csv übersprungen.")
             return
         df_meta = coalesce_years(df_meta)
         year_col = "year_final"
@@ -509,9 +399,14 @@ def compute_milestones(df_meta: pd.DataFrame, out_dir: Path):
 def run(
     preprocessed_dir: Path,
     output_dir: Path,
-    delimiter: str = ";",
-) -> None:
-    """Führt alle Statistik-Berechnungen durch."""
+    delimiter: str = "auto",
+) -> str:
+    """
+    Führt alle Statistik-Berechnungen durch.
+    
+    Returns:
+        Verwendeter Delimiter
+    """
     
     print(f"\n📁 Eingabeordner: {preprocessed_dir}")
     print(f"📁 Ausgabeordner: {output_dir}")
@@ -520,8 +415,8 @@ def run(
     ensure_nltk()
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    print("📂 Lade Korpora:")
-    corpora = load_corpus_files(preprocessed_dir, delimiter)
+    print("📚 Lade Korpora:")
+    corpora, used_delimiter = load_corpus_files(preprocessed_dir, delimiter)
     
     # Metadaten von einem Korpus nehmen (alle sollten identische Metadaten haben)
     df_meta, _ = next(iter(corpora.values()))
@@ -558,6 +453,8 @@ def run(
     print("\n" + "="*60)
     print("✅ Alle Statistiken erstellt.")
     print("="*60)
+    
+    return used_delimiter
 
 
 # =============================================================================
@@ -569,17 +466,16 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         description="Erstellt Korpus-Statistiken aus preprocessed Dateien.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-FLEXIBILISIERUNG v3:
-  - Automatische Content-Spalten-Erkennung (content_min, content_lem, content_stop)
-  - Flexible Jahr-Erkennung (year_first, year, Jahr_final, jahr)
-  - Flexible ID-Erkennung (doc_id, _id, id, filename)
-  - Konsistent mit Pipeline v2-Outputs
+ÄNDERUNG v3:
+  - Automatische Delimiter-Erkennung (--delimiter auto)
+  - Automatische Content-Spalten-Erkennung
+  - Flexible Jahr-/ID-Erkennung
 
 Beispiel:
-  python s01_3_statistics_v3.py \\
+  python s01_3_statistics.py \\
       --preprocessed-dir output/processed_corpus \\
       --output-dir output/statistics \\
-      --delimiter ";"
+      --delimiter auto
         """
     )
     parser.add_argument(
@@ -596,8 +492,8 @@ Beispiel:
     )
     parser.add_argument(
         "--delimiter",
-        default=";",
-        help="CSV-Delimiter (Standard: ';')",
+        default="auto",
+        help="CSV-Delimiter ('auto' für automatische Erkennung, Standard: auto)",
     )
     return parser.parse_args(argv)
 

@@ -3,11 +3,12 @@
 """
 Erstellt Vokabulare aus den Preprocessing-Ausgaben.
 
-ÄNDERUNG v2:
-- Arbeitet mit den neuen Content-Spaltennamen: content_min, content_lem, content_stop
-- Flexible Metadaten-Handhabung
-- year/year_first werden speziell für Zeitintervalle verwendet
-- textclass und genre werden dynamisch erkannt (falls vorhanden)
+ÄNDERUNG v3:
+- Automatische Delimiter-Erkennung (Fallback: ";")
+- Automatische Metadaten-Erkennung
+- Dynamische Intervall-Generierung aus den Jahresdaten
+- Flexible ID-Spalten-Erkennung
+- Konsistent mit Pipeline v3
 
 Input-Dateien:
     korpus_min.csv (mit content_min)
@@ -22,10 +23,10 @@ Ausgabe:
 
 Beispielaufruf: 
 
-    python s01_2_vocabular_v2.py \
-        --input-dir output/processed_corpus \
-        --output-dir output/vocabular \
-        --delimiter ";"
+    python s01_2_vocabular.py \\
+        --input-dir output/processed_corpus \\
+        --output-dir output/vocabular \\
+        --delimiter auto
 """
 
 import argparse
@@ -33,9 +34,29 @@ import json
 import re
 from pathlib import Path
 from collections import Counter
-from typing import Iterable, Dict, List, Tuple
+from typing import Iterable, Dict, List, Tuple, Optional
 
 import pandas as pd
+
+# Import der gemeinsamen Utils
+try:
+    from .pipeline_utils import (
+        detect_delimiter, read_csv_auto,
+        identify_content_column, identify_content_column_strict,
+        identify_metadata_columns, identify_id_column,
+        identify_year_columns, get_year_series,
+        has_column, safe_filename, detect_year_range,
+        generate_default_intervals
+    )
+except ImportError:
+    from pipeline_utils import (
+        detect_delimiter, read_csv_auto,
+        identify_content_column, identify_content_column_strict,
+        identify_metadata_columns, identify_id_column,
+        identify_year_columns, get_year_series,
+        has_column, safe_filename, detect_year_range,
+        generate_default_intervals
+    )
 
 
 # ---------------------------------------------------------
@@ -50,28 +71,6 @@ def analyze_vocabulary(texts: Iterable[str]) -> Counter:
 
 
 # ---------------------------------------------------------
-# Metadaten-Erkennung
-# ---------------------------------------------------------
-
-def identify_content_column(df: pd.DataFrame) -> str:
-    """
-    Identifiziert die Content-Spalte (content_min, content_lem oder content_stop).
-    
-    Returns:
-        Name der Content-Spalte
-    """
-    for col in ["content_stop", "content_lem", "content_min"]:
-        if col in df.columns:
-            return col
-    raise ValueError("Keine Content-Spalte gefunden (content_min/content_lem/content_stop)")
-
-
-def has_column(df: pd.DataFrame, col: str) -> bool:
-    """Prüft, ob eine Spalte existiert und nicht-leere Werte enthält."""
-    return col in df.columns and df[col].notna().any()
-
-
-# ---------------------------------------------------------
 # Speichern
 # ---------------------------------------------------------
 
@@ -83,57 +82,104 @@ def save_vocab(data: Dict, out_path: Path) -> None:
 
 
 # ---------------------------------------------------------
-# Genres wie in deinem Original
+# Dynamische Intervall-Generierung
 # ---------------------------------------------------------
 
-PREDEFINED_GENRES = [
-    "Theorie", "Methodik", "Erläuterung", "Lexikonartikel",
-    "Verordnung", "Rezension"
-]
+def generate_intervals_from_data(
+    df: pd.DataFrame,
+    custom_intervals: Optional[List[Tuple[int, int]]] = None,
+    default_interval_size: int = 15
+) -> List[Tuple[str, int, int]]:
+    """
+    Generiert Intervalle dynamisch aus den Jahresdaten.
+    
+    Args:
+        df: DataFrame mit Jahr-Spalten
+        custom_intervals: Optional - Liste von (start, end) Tupeln
+        default_interval_size: Intervallgröße wenn keine custom_intervals
+    
+    Returns:
+        Liste von (label, start_year, end_year) Tupeln
+    """
+    if custom_intervals:
+        return [(f"{s}-{e}", s, e) for s, e in custom_intervals]
+    
+    year_range = detect_year_range(df)
+    if year_range is None:
+        return []
+    
+    min_year, max_year = year_range
+    intervals = []
+    
+    start = min_year
+    while start <= max_year:
+        end = min(start + default_interval_size - 1, max_year)
+        label = f"{start}-{end}"
+        intervals.append((label, start, end))
+        start = end + 1
+    
+    return intervals
+
 
 # ---------------------------------------------------------
-# Zeitintervalle wie in deinem Original
+# Dynamische Genre-Erkennung
 # ---------------------------------------------------------
 
-INTERVALS = {
-    "1782-1852": (1782, 1852),
-    "1853-1864": (1853, 1864),
-    "1865-1876": (1865, 1876),
-    "1877-1891": (1877, 1891),
-    "1782-1856": (1782, 1856),
-    "1857-1872": (1857, 1872),
-    "1873-1891": (1873, 1891),
-    "1782-1864": (1782, 1864),
-    "1865-1891": (1865, 1891)
-}
+def detect_genres(df: pd.DataFrame) -> List[str]:
+    """
+    Erkennt alle einzigartigen Genres im DataFrame.
+    
+    Unterstützt sowohl einzelne Werte als auch kommagetrennte Listen.
+    """
+    if not has_column(df, "genre"):
+        return []
+    
+    genres = set()
+    for val in df["genre"].dropna().astype(str):
+        # Kommagetrennte Werte aufteilen
+        parts = [p.strip() for p in val.split(",")]
+        genres.update(p for p in parts if p)
+    
+    return sorted(genres)
 
 
 # ---------------------------------------------------------
 # Vokabularerstellung für jede Variante
 # ---------------------------------------------------------
 
-def build_vocabularies(df: pd.DataFrame, variant: str, output_dir: Path):
+def build_vocabularies(
+    df: pd.DataFrame, 
+    variant: str, 
+    output_dir: Path,
+    custom_intervals: Optional[List[Tuple[int, int]]] = None,
+    interval_size: int = 15
+):
     """
     Erstellt Vokabulare für:
         - Gesamt
         - Textklassen (falls Spalte vorhanden)
-        - Zeitintervalle (falls year/year_first vorhanden)
-        - Genres (falls genre-Spalte vorhanden)
+        - Zeitintervalle (falls year/year_first vorhanden - dynamisch generiert)
+        - Genres (falls genre-Spalte vorhanden - dynamisch erkannt)
     """
     
     # Content-Spalte identifizieren
-    content_col = identify_content_column(df)
+    content_col = identify_content_column_strict(df)
     print(f"  📋 Content-Spalte: {content_col}")
+    
+    # Metadaten identifizieren
+    metadata_cols = identify_metadata_columns(df, content_col)
+    print(f"  📋 Metadaten-Spalten: {len(metadata_cols)}")
 
     # -----------------------------------------------------
     # 1) Gesamtvokabular
     # -----------------------------------------------------
-    print(f"  🔄 Erzeuge Gesamtvokabular ({variant}) …")
+    print(f"  📄 Erzeuge Gesamtvokabular ({variant}) ...")
 
     freq = analyze_vocabulary(df[content_col])
     vocab_data = {
         "variant": variant,
         "vocabulary_size": len(freq),
+        "total_tokens": sum(freq.values()),
         "top_words": freq.most_common(5000),
         "full_vocab": dict(freq)
     }
@@ -143,8 +189,11 @@ def build_vocabularies(df: pd.DataFrame, variant: str, output_dir: Path):
     # 2) Textklassen (falls vorhanden)
     # -----------------------------------------------------
     if has_column(df, "textclass"):
-        print(f"  🔄 Erzeuge Vokabulare für Textklassen ({variant}) …")
-        for tc in sorted(df["textclass"].dropna().unique()):
+        print(f"  📄 Erzeuge Vokabulare für Textklassen ({variant}) ...")
+        textclasses = sorted(df["textclass"].dropna().unique())
+        print(f"      Gefunden: {len(textclasses)} Textklassen")
+        
+        for tc in textclasses:
             texts = df.loc[df["textclass"] == tc, content_col].astype(str).tolist()
             if not texts:
                 continue
@@ -153,32 +202,36 @@ def build_vocabularies(df: pd.DataFrame, variant: str, output_dir: Path):
             vocab_data = {
                 "variant": variant,
                 "textclass": tc,
+                "document_count": len(texts),
                 "vocabulary_size": len(freq),
+                "total_tokens": sum(freq.values()),
                 "top_words": freq.most_common(5000),
                 "full_vocab": dict(freq)
             }
-            out = output_dir / "textclass" / f"vocab_textclass_{variant}_{tc}.json"
+            out = output_dir / "textclass" / f"vocab_textclass_{variant}_{safe_filename(tc)}.json"
             save_vocab(vocab_data, out)
     else:
-        print(f"  ⚠️  Keine 'textclass'-Spalte gefunden – Textklassen-Vokabulare übersprungen.")
+        print(f"  ⚠️  Keine 'textclass'-Spalte gefunden → Textklassen-Vokabulare übersprungen.")
 
     # -----------------------------------------------------
-    # 3) Zeitintervalle (falls year/year_first vorhanden)
+    # 3) Zeitintervalle (dynamisch generiert)
     # -----------------------------------------------------
-    if has_column(df, "year") or has_column(df, "year_first"):
-        print(f"  🔄 Erzeuge Vokabulare für Zeitintervalle ({variant}) …")
+    year_first_col, year_col = identify_year_columns(df)
+    
+    if year_first_col or year_col:
+        print(f"  📄 Erzeuge Vokabulare für Zeitintervalle ({variant}) ...")
         
-        # year_first hat Vorrang, sonst year
-        if "year_first" in df.columns:
-            year_col = df["year_first"].combine_first(df.get("year", pd.Series()))
-        else:
-            year_col = df["year"]
+        # Jahr-Serie erstellen
+        year_series = get_year_series(df)
         
-        year_col = pd.to_numeric(year_col, errors="coerce")
+        # Intervalle generieren
+        intervals = generate_intervals_from_data(df, custom_intervals, interval_size)
+        print(f"      Gefunden: {len(intervals)} Intervalle")
         
-        for label, (start_y, end_y) in INTERVALS.items():
-            mask = year_col.apply(lambda y: isinstance(y, (int, float)) and start_y <= y <= end_y)
+        for label, start_y, end_y in intervals:
+            mask = (year_series >= start_y) & (year_series <= end_y)
             texts = df.loc[mask, content_col].astype(str).tolist()
+            
             if not texts:
                 continue
 
@@ -187,27 +240,34 @@ def build_vocabularies(df: pd.DataFrame, variant: str, output_dir: Path):
                 "variant": variant,
                 "interval": label,
                 "year_range": [start_y, end_y],
+                "document_count": len(texts),
                 "vocabulary_size": len(freq),
+                "total_tokens": sum(freq.values()),
                 "top_words": freq.most_common(5000),
                 "full_vocab": dict(freq)
             }
             out = output_dir / "intervals" / f"vocab_interval_{variant}_{label}.json"
             save_vocab(vocab_data, out)
     else:
-        print(f"  ⚠️  Keine 'year' oder 'year_first'-Spalte gefunden – Intervall-Vokabulare übersprungen.")
+        print(f"  ⚠️  Keine 'year' oder 'year_first'-Spalte gefunden → Intervall-Vokabulare übersprungen.")
 
     # -----------------------------------------------------
-    # 4) Genres (falls vorhanden)
+    # 4) Genres (dynamisch erkannt)
     # -----------------------------------------------------
     if has_column(df, "genre"):
-        print(f"  🔄 Erzeuge Vokabulare für Genres ({variant}) …")
-        for genre in PREDEFINED_GENRES:
-            # prüfe, ob der Eintrag Teilstrings enthält (kommagetrennte Listen)
+        print(f"  📄 Erzeuge Vokabulare für Genres ({variant}) ...")
+        
+        genres = detect_genres(df)
+        print(f"      Gefunden: {len(genres)} Genres")
+        
+        for genre in genres:
+            # Prüfe, ob der Eintrag den Genre-String enthält (kommagetrennte Listen)
             mask = df["genre"].astype(str).str.contains(
-                rf"(^|, )?{re.escape(genre)}($|, )?",
+                rf"(^|,\s*){re.escape(genre)}($|,)",
                 regex=True, na=False
             )
             texts = df.loc[mask, content_col].astype(str).tolist()
+            
             if not texts:
                 continue
 
@@ -215,14 +275,16 @@ def build_vocabularies(df: pd.DataFrame, variant: str, output_dir: Path):
             vocab_data = {
                 "variant": variant,
                 "genre": genre,
+                "document_count": len(texts),
                 "vocabulary_size": len(freq),
+                "total_tokens": sum(freq.values()),
                 "top_words": freq.most_common(5000),
                 "full_vocab": dict(freq)
             }
-            out = output_dir / "genres" / f"vocab_genre_{variant}_{genre}.json"
+            out = output_dir / "genres" / f"vocab_genre_{variant}_{safe_filename(genre)}.json"
             save_vocab(vocab_data, out)
     else:
-        print(f"  ⚠️  Keine 'genre'-Spalte gefunden – Genre-Vokabulare übersprungen.")
+        print(f"  ⚠️  Keine 'genre'-Spalte gefunden → Genre-Vokabulare übersprungen.")
 
 
 # ---------------------------------------------------------
@@ -230,7 +292,23 @@ def build_vocabularies(df: pd.DataFrame, variant: str, output_dir: Path):
 # ---------------------------------------------------------
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Erstellt Vokabulare aus Preprocessing-Outputs.")
+    p = argparse.ArgumentParser(
+        description="Erstellt Vokabulare aus Preprocessing-Outputs.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+ÄNDERUNG v3:
+  - Automatische Delimiter-Erkennung (Fallback: ";")
+  - Dynamische Intervall-Generierung aus Jahresdaten
+  - Dynamische Genre-Erkennung
+  - Flexible Metadaten-/ID-Erkennung
+
+Beispiel:
+  python s01_2_vocabular.py \\
+      --input-dir output/processed_corpus \\
+      --output-dir output/vocabular \\
+      --delimiter auto
+        """
+    )
     p.add_argument(
         "--input-dir",
         required=True,
@@ -245,8 +323,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     p.add_argument(
         "--delimiter",
-        default="\t",
-        help="CSV/TSV-Feldtrenner (Standard: Tab)",
+        default="auto",
+        help="CSV/TSV-Feldtrenner ('auto' für automatische Erkennung, Standard: auto)",
+    )
+    p.add_argument(
+        "--interval-size",
+        type=int,
+        default=15,
+        help="Standard-Intervallgröße in Jahren (Standard: 15)",
     )
     return p.parse_args(argv)
 
@@ -258,23 +342,44 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def run(
     input_dir: Path,
     output_dir: Path,
-    delimiter: str = "\t",
+    delimiter: str = "auto",
+    interval_size: int = 15,
+    custom_intervals: Optional[List[Tuple[int, int]]] = None,
 ) -> None:
+    """
+    Erstellt Vokabulare für alle Preprocessing-Varianten.
+    
+    Args:
+        input_dir: Ordner mit korpus_*.csv Dateien
+        output_dir: Ausgabeordner für JSON-Dateien
+        delimiter: CSV-Delimiter ("auto" für automatische Erkennung)
+        interval_size: Standard-Intervallgröße in Jahren
+        custom_intervals: Optional - Liste von (start, end) Tupeln
+    """
     variants = ["min", "lem", "stop"]
+    detected_delimiter = None
 
     for variant in variants:
         infile = input_dir / f"korpus_{variant}.csv"
         if not infile.exists():
-            print(f"⚠️  Datei fehlt: {infile} – überspringe.")
+            print(f"⚠️  Datei fehlt: {infile} → überspringe.")
             continue
 
         print(f"\n{'='*70}")
         print(f"VARIANTE: {variant.upper()}")
         print(f"{'='*70}")
-        print(f"📄 Lese {infile} …")
-        df = pd.read_csv(infile, sep=delimiter, encoding="utf-8")
+        print(f"📄 Lese {infile} ...")
+        
+        # Delimiter nur einmal erkennen
+        if delimiter == "auto" and detected_delimiter is None:
+            detected_delimiter = detect_delimiter(infile)
+        
+        use_delimiter = detected_delimiter if delimiter == "auto" else delimiter
+        df = pd.read_csv(infile, sep=use_delimiter, encoding="utf-8")
+        
+        print(f"  📊 {len(df)} Dokumente geladen")
 
-        build_vocabularies(df, variant, output_dir)
+        build_vocabularies(df, variant, output_dir, custom_intervals, interval_size)
 
     print("\n" + "="*70)
     print("✅ Fertig. Alle Vokabulare erstellt.")
@@ -291,6 +396,7 @@ def main(argv: list[str] | None = None) -> None:
         input_dir=args.input_dir,
         output_dir=args.output_dir,
         delimiter=args.delimiter,
+        interval_size=args.interval_size,
     )
 
 

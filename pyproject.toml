@@ -1,6 +1,6 @@
 [project]
 name = "fadelive"
-version = "0.1.0"
+version = "1.2.0"
 description =   "Ger: fadelive: Setup von NLP, Text Mining und Visualisierungen eines bildungshistorischen Korpus zur Vermittlung des Deutschunterrichts an höheren Schulen im 19. Jahrhundert in Deutschland. Eng: fadelive: Setup of NLP, text mining tools and visualisations of an educational history corpus for teaching German in secondary schools in 19th-century Germany."
 
 readme = "README.md"
@@ -29,7 +29,6 @@ dependencies = [
     "scipy",
     "seaborn",
     "spacy>=3.8",
-    "de-core-news-lg @ https://github.com/explosion/spacy-models/releases/download/de_core_news_lg-3.8.0/de_core_news_lg-3.8.0-py3-none-any.whl",
     "tqdm",
     "umap-learn",
     "wordcloud"

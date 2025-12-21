@@ -4,12 +4,12 @@
 Erzeugt DTM- und TF-IDF-Matrizen aus dem vollständig
 vorverarbeiteten Stopwort-Korpus 'korpus_stop.csv'.
 
-ÄNDERUNG v2:
+ÄNDERUNG v3:
+- Automatische Delimiter-Erkennung (Fallback: ";")
 - Arbeitet mit content_stop (nicht "content")
 - Flexible Metadaten-Handhabung: Alle Spalten außer content_stop werden als Metadaten behandelt
 - OUTPUT: Nur Metadaten + Features (KEINE Content-Spalte in den Matrizen!)
-- Keine feste Metadaten-Liste mehr
-- Dokumente mit leerem oder trivialem Inhalt werden nicht berücksichtigt
+- Konsistent mit Pipeline v3
 
 Eingabe:
     output/processed_corpus/korpus_stop.csv (mit content_stop)
@@ -26,10 +26,10 @@ Ausgaben:
 
 Beispielaufruf:
 
-    python s03_dtm_tfidf_v2.py \
-        --input output/processed_corpus/korpus_stop.csv \
-        --output output/dtm_tfidf_stop \
-        --sep ";"
+    python s03_dtm_tfidf.py \\
+        --input output/processed_corpus/korpus_stop.csv \\
+        --output output/dtm_tfidf_stop \\
+        --sep auto
 """
 
 import argparse
@@ -37,62 +37,54 @@ import pandas as pd
 from pathlib import Path
 from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
 
-
-# ---------------------------------------------------------
-# Metadaten-Erkennung
-# ---------------------------------------------------------
-
-def identify_content_column(df: pd.DataFrame) -> str:
-    """
-    Identifiziert die Content-Spalte (content_stop, content_lem oder content_min).
-    
-    Returns:
-        Name der Content-Spalte
-    """
-    for col in ["content_stop", "content_lem", "content_min", "content_gen"]:
-        if col in df.columns:
-            return col
-    raise ValueError("Keine Content-Spalte gefunden (content_stop/content_lem/content_min/content_gen)")
-
-
-def identify_metadata_columns(df: pd.DataFrame, content_col: str) -> list[str]:
-    """Identifiziert alle Metadaten-Spalten (= alles außer der Content-Spalte)."""
-    return [col for col in df.columns if col != content_col]
+# Import der gemeinsamen Utils
+try:
+    from .pipeline_utils import (
+        detect_delimiter,
+        identify_content_column,
+        identify_metadata_columns,
+        has_column, safe_filename
+    )
+except ImportError:
+    from pipeline_utils import (
+        detect_delimiter,
+        identify_content_column,
+        identify_metadata_columns,
+        has_column, safe_filename
+    )
 
 
 # ---------------------------------------------------------
 # Hilfsfunktionen
 # ---------------------------------------------------------
 
-def safe_filename(name: str) -> str:
-    """Erzeugt sichere Dateinamen."""
-    return str(name).replace(" ", "_").replace("/", "_").replace("\\", "_")
-
-
-def load_corpus(path: Path, sep: str = ",") -> tuple[pd.DataFrame, str]:
+def load_corpus(path: Path, sep: str = "auto") -> tuple[pd.DataFrame, str, str]:
     """
     Lädt das Korpus und entfernt alle Dokumente ohne echten Inhalt.
     
     Returns:
-        (DataFrame, content_column_name)
+        (DataFrame, content_column_name, delimiter)
     """
 
     if not path.exists():
-        raise FileNotFoundError(f"❌ Eingabedatei nicht gefunden: {path}")
+        raise FileNotFoundError(f"âŒ Eingabedatei nicht gefunden: {path}")
+
+    # Delimiter erkennen
+    if sep == "auto":
+        sep = detect_delimiter(path)
 
     df = pd.read_csv(path, sep=sep, encoding="utf-8")
 
     # Content-Spalte identifizieren
     content_col = identify_content_column(df)
+    if content_col is None:
+        raise ValueError("Keine Content-Spalte gefunden")
     print(f"📋 Erkannte Content-Spalte: {content_col}")
 
     # content normalisieren
     df[content_col] = df[content_col].fillna("").astype(str)
 
-    # Entferne Dokumente ohne Inhalt:
-    # - leer
-    # - nur Whitespace
-    # - nur Sonderzeichen/Zahlen
+    # Entferne Dokumente ohne Inhalt
     def has_real_text(s: str) -> bool:
         s_clean = "".join([c for c in s if c.isalpha()])
         return bool(s_clean.strip())
@@ -104,12 +96,12 @@ def load_corpus(path: Path, sep: str = ",") -> tuple[pd.DataFrame, str]:
     dropped = before - after
 
     if after == 0:
-        raise ValueError("❌ Kein einziges Dokument enthält verwertbaren Inhalt.")
+        raise ValueError("âŒ Kein einziges Dokument enthält verwertbaren Inhalt.")
 
     if dropped > 0:
         print(f"⚠️  {dropped} Dokument(e) wegen fehlendem Inhalt übersprungen.")
 
-    return df, content_col
+    return df, content_col, sep
 
 
 def save_matrix(df_meta: pd.DataFrame, matrix, terms, out_file: Path):
@@ -173,7 +165,7 @@ def create_frequency_based_matrix(
     min_freq: int,
     output_dir: Path
 ):
-    """Erzeugt eine DTM aller Wörter, die mindestens min_freq Vorkommen haben (ohne Content!)."""
+    """Erzeugt eine DTM aller Wörter, die mindestens min_freq Vorkommen haben."""
     print(f"➡ Erzeuge DTM (min. {min_freq} Vorkommen)")
 
     vec = CountVectorizer()
@@ -186,7 +178,7 @@ def create_frequency_based_matrix(
     selected_terms = freq_df[freq_df["freq"] >= min_freq]["term"].tolist()
 
     if not selected_terms:
-        print(f"⚠️  Keine Terme erfüllen die Bedingung ≥ {min_freq}. Übersprungen.")
+        print(f"⚠️  Keine Terme erfüllen die Bedingung â‰¥ {min_freq}. Übersprungen.")
         return
 
     full_matrix = pd.DataFrame(V.toarray(), columns=terms)
@@ -212,16 +204,21 @@ def create_frequency_based_matrix(
 def run(
     input_path: Path,
     output_dir: Path,
-    sep: str = ",",
-) -> None:
-    """Erstellt DTM- und TF-IDF-Matrizen aus einem Stopwort-Korpus."""
+    sep: str = "auto",
+) -> str:
+    """
+    Erstellt DTM- und TF-IDF-Matrizen aus einem Stopwort-Korpus.
+    
+    Returns:
+        Verwendeter Delimiter
+    """
 
     print(f"📄 Lade Korpus: {input_path}")
-    df, content_col = load_corpus(input_path, sep=sep)
+    df, content_col, used_sep = load_corpus(input_path, sep=sep)
 
     # Metadaten automatisch erkennen (ohne Content!)
     metadata_cols = identify_metadata_columns(df, content_col)
-    print(f"📋 Erkannte Metadaten-Spalten: {', '.join(metadata_cols)}")
+    print(f"📋 Erkannte Metadaten-Spalten: {len(metadata_cols)}")
     print(f"ℹ️  Content-Spalte ({content_col}) wird NICHT in den Matrizen gespeichert")
 
     vectorizers = {
@@ -241,6 +238,7 @@ def run(
     create_frequency_based_matrix(df, content_col, metadata_cols, min_freq=6, output_dir=output_dir)
 
     print("\n✅ Alle Matrizen wurden erfolgreich erzeugt.")
+    return used_sep
 
 
 # ---------------------------------------------------------
@@ -249,7 +247,20 @@ def run(
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
-        description="Erstellt DTM- und TF-IDF-Matrizen aus einem Stopwort-Korpus."
+        description="Erstellt DTM- und TF-IDF-Matrizen aus einem Stopwort-Korpus.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+ÄNDERUNG v3:
+  - Automatische Delimiter-Erkennung (--sep auto)
+  - Flexible Content-/Metadaten-Erkennung
+  - Konsistent mit Pipeline v3
+
+Beispiel:
+  python s03_dtm_tfidf.py \\
+      --input output/processed_corpus/korpus_stop.csv \\
+      --output output/dtm_tfidf_stop \\
+      --sep auto
+        """
     )
     parser.add_argument(
         "--input",
@@ -265,8 +276,8 @@ def parse_args(argv=None):
     )
     parser.add_argument(
         "--sep",
-        default=",",
-        help="CSV-Delimiter (Standard ',')",
+        default="auto",
+        help="CSV-Delimiter ('auto' für automatische Erkennung)",
     )
     return parser.parse_args(argv)
 

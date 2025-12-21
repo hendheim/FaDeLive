@@ -3,10 +3,10 @@
 POS-Tagging für ein JSON-Vokabular. Nutzbar als CLI, als Python-Modul
 oder als importierbare Pipeline-Funktion.
 
-ÄNDERUNG v2:
+HINWEIS v3:
 - Keine Änderungen nötig: Dieses Modul arbeitet nur mit JSON-Vokabularen,
   nicht direkt mit Metadaten aus dem Korpus
-- Bleibt unverändert, da es keine Metadaten-Spalten verarbeitet
+- Konsistent mit Pipeline v3
 
 JSON-Format:
 
@@ -22,9 +22,9 @@ JSON-Format:
 
 Beispielaufruf: 
 
-    python s01_4_pos_tag_v2.py \
-        --input output/vocabular/vocab_full_stop.json \
-        --output output/vocabular/vocab_top5000_stop_pos.csv \
+    python s01_4_pos_tag.py \\
+        --input output/vocabular/vocab_full_stop.json \\
+        --output output/vocabular/vocab_top5000_stop_pos.csv \\
         --model de_core_news_lg
 """
 
